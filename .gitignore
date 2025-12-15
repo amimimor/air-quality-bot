@@ -1,0 +1,36 @@
+# Environment files with secrets
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+virtualenv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# DigitalOcean serverless deploy artifacts
+.deployed/
+__deployer__.zip
