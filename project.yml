@@ -20,3 +20,8 @@ packages:
         web: true
         limits:
           timeout: 60000
+        triggers:
+          - name: every-30-min
+            sourceType: scheduler
+            sourceDetails:
+              cron: "*/30 * * * *"
