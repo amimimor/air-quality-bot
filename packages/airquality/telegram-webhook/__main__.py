@@ -791,11 +791,9 @@ def get_current_readings(user: dict) -> str:
             lines.append("")
 
         except Exception as e:
-            print(f"Error fetching station {station_id}: {e}")
             continue
 
     if len(lines) <= 2:
-        print(f"No data collected. station_ids={station_ids}, api_token={api_token[:10] if api_token else None}...")
         return "❌ לא הצלחתי לקבל נתונים. נסו שוב מאוחר יותר."
 
     lines.append("🔗 https://air.sviva.gov.il")
