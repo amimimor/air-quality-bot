@@ -259,10 +259,20 @@ def get_all_stations() -> list[dict]:
                 region_id = s.get("regionId", 0)
                 region = REGION_ID_MAP.get(region_id, "other")
                 region_he = REGION_HE_MAP.get(region, "אחר")
+                city = s.get("city") or ""
+                station_name = s["name"]
+
+                # Build display name: "Station, City" if city available
+                if city and city != station_name:
+                    display_name = f"{station_name}, {city}"
+                else:
+                    display_name = station_name
 
                 stations.append({
                     "id": s["stationId"],
-                    "name": s["name"],
+                    "name": station_name,
+                    "city": city,
+                    "display_name": display_name,
                     "nameEn": s["name"],  # Hebrew name as fallback
                     "region": region,
                     "regionHe": region_he,
@@ -588,7 +598,7 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
         return f"""
 {emoji} *התראת איכות אוויר*
 
-📍 *תחנה:* {station['name']}
+📍 *תחנה:* {station.get('display_name', station['name'])}
 🗺️ *אזור:* {station.get('regionHe', 'לא ידוע')}
 📊 *מדד:* {reading['aqi']} ({level_text_he[level]})
 🕐 *זמן:* {reading['timestamp'][:16]}
@@ -625,7 +635,7 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
     return f"""
 {emoji} *Air Quality Alert*
 
-📍 *Station:* {station.get('nameEn', station['name'])}
+📍 *Station:* {station.get('display_name', station['name'])}
 🗺️ *Region:* {REGION_NAMES.get(station['region'], station['region'])}
 📊 *AQI:* {reading['aqi']} ({level_text_en[level]})
 🕐 *Time:* {reading['timestamp'][:16]}

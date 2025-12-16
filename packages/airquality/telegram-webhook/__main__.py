@@ -760,12 +760,13 @@ def get_current_readings(user: dict) -> str:
             aqi = calculate_aqi(pollutants)
             level_name, emoji = get_aqi_level(aqi)
 
-            # Get station name
+            # Get station name with city
             station_name = str(station_id)
             all_stations = _stations_cache.get("stations", [])
             for s in all_stations:
                 if s["id"] == station_id:
-                    station_name = s.get("city") or s["name"]
+                    # Use display_name which includes "Station, City" format
+                    station_name = s.get("display_name") or s.get("city") or s["name"]
                     break
 
             # Use RTL mark for consistent alignment
