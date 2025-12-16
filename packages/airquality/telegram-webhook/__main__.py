@@ -646,58 +646,52 @@ def handle_message(chat_id: str, text: str) -> str:
     return WELCOME_MESSAGE
 
 
+def calculate_sub_index(value: float, breakpoints: list) -> float:
+    """Calculate sub-index using Israeli piecewise linear interpolation."""
+    for conc_lo, conc_hi, idx_lo, idx_hi in breakpoints:
+        if conc_lo <= value <= conc_hi:
+            return ((idx_hi - idx_lo) / (conc_hi - conc_lo)) * (value - conc_lo) + idx_lo
+    return breakpoints[-1][3]
+
+
 def calculate_aqi(pollutants: dict) -> int:
-    """Calculate Air Quality Index based on pollutant values."""
-    pm25 = pollutants.get("PM2.5")
-    pm10 = pollutants.get("PM10")
-    o3 = pollutants.get("O3")
-    no2 = pollutants.get("NO2")
-    benzene = pollutants.get("BENZENE") or pollutants.get("Benzene")
+    """
+    Calculate Air Quality Index using official Israeli formula.
+    Israeli AQI: 100 = best, 0 = worst (inverted scale)
+    """
+    BREAKPOINTS = {
+        "PM2.5": [(0, 18.5, 0, 49), (18.6, 37, 50, 100), (37.5, 84, 101, 200), (84.5, 130, 201, 300), (130.5, 165, 301, 400), (165.5, 200, 401, 500)],
+        "PM10": [(0, 65, 0, 49), (66, 129, 50, 100), (130, 215, 101, 200), (216, 300, 201, 300), (301, 355, 301, 400), (356, 430, 401, 500)],
+        "O3": [(0, 35, 0, 49), (36, 70, 50, 100), (71, 97, 101, 200), (98, 117, 201, 300), (118, 155, 301, 400), (156, 188, 401, 500)],
+        "NO2": [(0, 53, 0, 49), (54, 105, 50, 100), (106, 160, 101, 200), (161, 213, 201, 300), (214, 260, 301, 400), (261, 316, 401, 500)],
+        "SO2": [(0, 67, 0, 49), (68, 133, 50, 100), (134, 163, 101, 200), (164, 191, 201, 300), (192, 253, 301, 400), (254, 303, 401, 500)],
+        "CO": [(0, 26, 0, 49), (27, 51, 50, 100), (52, 78, 101, 200), (79, 104, 201, 300), (105, 130, 301, 400), (131, 156, 401, 500)],
+        "NOX": [(0, 250, 0, 49), (251, 499, 50, 100), (500, 750, 101, 200), (751, 1000, 201, 300), (1001, 1200, 301, 400), (1201, 1400, 401, 500)],
+    }
 
-    scores = []
+    sub_indices = []
+    for pollutant, breakpoints in BREAKPOINTS.items():
+        value = pollutants.get(pollutant)
+        if value is not None and value >= 0:
+            sub_idx = calculate_sub_index(value, breakpoints)
+            sub_indices.append(sub_idx)
 
-    if pm25 is not None:
-        if pm25 <= 12: scores.append(100)
-        elif pm25 <= 35: scores.append(75 - int((pm25 - 12) * 1.5))
-        elif pm25 <= 55: scores.append(50 - int((pm25 - 35) * 2.5))
-        elif pm25 <= 150: scores.append(0 - int((pm25 - 55) * 2))
-        else: scores.append(-400)
+    if not sub_indices:
+        return 50
 
-    if pm10 is not None:
-        if pm10 <= 50: scores.append(100)
-        elif pm10 <= 100: scores.append(75 - int((pm10 - 50) * 0.5))
-        elif pm10 <= 150: scores.append(50 - int((pm10 - 100) * 1))
-        else: scores.append(0 - int((pm10 - 150) * 2))
-
-    if o3 is not None:
-        if o3 <= 60: scores.append(100)
-        elif o3 <= 80: scores.append(75 - int((o3 - 60)))
-        elif o3 <= 100: scores.append(55 - int((o3 - 80) * 2.5))
-        else: scores.append(0 - int((o3 - 100) * 2))
-
-    if no2 is not None:
-        if no2 <= 53: scores.append(100)
-        elif no2 <= 100: scores.append(75 - int((no2 - 53) * 0.5))
-        elif no2 <= 150: scores.append(50 - int((no2 - 100) * 1))
-        else: scores.append(0 - int((no2 - 150) * 2))
-
-    if benzene is not None:
-        if benzene <= 1: scores.append(100)
-        elif benzene <= 3: scores.append(75 - int((benzene - 1) * 12.5))
-        elif benzene <= 5: scores.append(50 - int((benzene - 3) * 25))
-        elif benzene <= 10: scores.append(0 - int((benzene - 5) * 40))
-        else: scores.append(-400)
-
-    return min(scores) if scores else 50
+    # Israeli AQI = 100 - worst sub-index (can go negative)
+    worst_sub_index = max(sub_indices)
+    aqi = 100 - worst_sub_index
+    return int(round(aqi))
 
 
 def get_aqi_level(aqi: int) -> tuple:
-    """Get AQI level name and emoji."""
-    if aqi >= 51:
+    """Get AQI level name and emoji. Israeli scale: 100=best, negative=worst."""
+    if aqi >= 80:
         return "טוב", "🟢"
-    elif aqi >= 0:
+    elif aqi >= 50:
         return "בינוני", "🟡"
-    elif aqi >= -200:
+    elif aqi >= 0:
         return "לא בריא", "🟠"
     else:
         return "מסוכן", "🔴"
@@ -795,9 +789,11 @@ def get_current_readings(user: dict) -> str:
             lines.append("")
 
         except Exception as e:
+            print(f"Error fetching station {station_id}: {e}")
             continue
 
     if len(lines) <= 2:
+        print(f"No data collected. station_ids={station_ids}, api_token={api_token[:10] if api_token else None}...")
         return "❌ לא הצלחתי לקבל נתונים. נסו שוב מאוחר יותר."
 
     lines.append("🔗 https://air.sviva.gov.il")
