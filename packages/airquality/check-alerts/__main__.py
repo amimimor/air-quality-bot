@@ -326,13 +326,13 @@ def get_watched_stations() -> list[dict]:
     return ALL_STATIONS
 
 
-# Israeli AQI thresholds (100=best, 0=worst)
+# Israeli AQI thresholds (100=best, negative=worst)
 # Alert when AQI drops BELOW these values
 ALERT_LEVELS = {
-    "GOOD": 80,       # Alert when < 80 (very sensitive)
-    "MODERATE": 50,   # Alert when < 50 (moderate sensitivity)
-    "LOW": 25,        # Alert when < 25 (low sensitivity)
-    "VERY_LOW": 10,   # Alert when < 10 (only dangerous)
+    "GOOD": 51,       # Alert when <= 50 (very sensitive - any degradation)
+    "MODERATE": 0,    # Alert when < 0 (moderate - unhealthy for sensitive)
+    "LOW": -100,      # Alert when < -100 (low sensitivity - unhealthy)
+    "VERY_LOW": -200, # Alert when < -200 (only hazardous)
 }
 
 
@@ -342,13 +342,13 @@ ALERT_LEVELS = {
 
 def get_alert_level(aqi: float) -> str:
     """Get alert level based on Israeli AQI (100=best, negative=worst)."""
-    if aqi >= 80:
+    if aqi > 50:  # sub-index 0-49 = Good
         return "GOOD"
-    elif aqi >= 50:
+    elif aqi >= 0:  # sub-index 50-100 = Moderate
         return "MODERATE"
-    elif aqi >= 0:
+    elif aqi >= -100:  # sub-index 101-200 = Unhealthy for sensitive
         return "LOW"
-    else:
+    else:  # sub-index > 200 = Unhealthy/Hazardous
         return "VERY_LOW"
 
 

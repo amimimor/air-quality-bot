@@ -687,14 +687,16 @@ def calculate_aqi(pollutants: dict) -> int:
 
 def get_aqi_level(aqi: int) -> tuple:
     """Get AQI level name and emoji. Israeli scale: 100=best, negative=worst."""
-    if aqi >= 80:
+    if aqi > 50:  # sub-index 0-49 = Good
         return "טוב", "🟢"
-    elif aqi >= 50:
+    elif aqi >= 0:  # sub-index 50-100 = Moderate
         return "בינוני", "🟡"
-    elif aqi >= 0:
-        return "לא בריא", "🟠"
-    else:
-        return "מסוכן", "🔴"
+    elif aqi >= -100:  # sub-index 101-200 = Unhealthy for sensitive
+        return "לא בריא לרגישים", "🟠"
+    elif aqi >= -200:  # sub-index 201-300 = Unhealthy
+        return "לא בריא", "🔴"
+    else:  # sub-index > 300 = Hazardous
+        return "מסוכן", "🟣"
 
 
 def get_current_readings(user: dict) -> str:
