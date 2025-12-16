@@ -355,11 +355,13 @@ def calculate_aqi(pollutants: dict) -> int:
     - PM10: Coarse particulate matter
     - O3: Ozone
     - NO2: Nitrogen dioxide
+    - Benzene: Carcinogenic VOC (EU limit: 5 µg/m³ annual)
     """
     pm25 = pollutants.get("PM2.5")
     pm10 = pollutants.get("PM10")
     o3 = pollutants.get("O3")
     no2 = pollutants.get("NO2")
+    benzene = pollutants.get("BENZENE") or pollutants.get("Benzene")
 
     scores = []
 
@@ -414,6 +416,19 @@ def calculate_aqi(pollutants: dict) -> int:
             scores.append(50 - int((no2 - 100) * 1))
         else:
             scores.append(0 - int((no2 - 150) * 2))
+
+    # Benzene scoring (µg/m³) - EU annual limit is 5 µg/m³
+    if benzene is not None:
+        if benzene <= 1:
+            scores.append(100)
+        elif benzene <= 3:
+            scores.append(75 - int((benzene - 1) * 12.5))
+        elif benzene <= 5:
+            scores.append(50 - int((benzene - 3) * 25))
+        elif benzene <= 10:
+            scores.append(0 - int((benzene - 5) * 40))
+        else:
+            scores.append(-400)
 
     # Return the worst (lowest) score, or 50 if no data
     return min(scores) if scores else 50
@@ -562,6 +577,9 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
             pollutant_lines.append(f"• גופרית דו-חמצנית (SO2): {pollutants['SO2']:.1f} ppb")
         if pollutants.get("CO"):
             pollutant_lines.append(f"• פחמן חד-חמצני (CO): {pollutants['CO']:.1f} ppm")
+        benzene_val = pollutants.get("BENZENE") or pollutants.get("Benzene")
+        if benzene_val:
+            pollutant_lines.append(f"• בנזן (Benzene): {benzene_val:.1f} µg/m³")
 
         pollutants_str = "\n".join(pollutant_lines) if pollutant_lines else "אין נתונים זמינים"
 
@@ -596,6 +614,9 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
         pollutant_lines.append(f"• Sulfur Dioxide (SO2): {pollutants['SO2']:.1f} ppb")
     if pollutants.get("CO"):
         pollutant_lines.append(f"• Carbon Monoxide (CO): {pollutants['CO']:.1f} ppm")
+    benzene_val = pollutants.get("BENZENE") or pollutants.get("Benzene")
+    if benzene_val:
+        pollutant_lines.append(f"• Benzene: {benzene_val:.1f} µg/m³")
 
     pollutants_str = "\n".join(pollutant_lines) if pollutant_lines else "No data available"
 
@@ -615,6 +636,157 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
 
 🔗 https://air.sviva.gov.il
 """.strip()
+
+
+# ============================================================================
+# Telegram
+# ============================================================================
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
+
+def get_telegram_user(chat_id: str) -> Optional[dict]:
+    """Get Telegram user from Redis."""
+    r = get_redis()
+    if not r:
+        return None
+    try:
+        data = r.get(f"telegram:user:{chat_id}")
+        return json.loads(data) if data else None
+    except:
+        return None
+
+
+def get_telegram_subscribers_by_region(region: str) -> list[dict]:
+    """Get Telegram subscribers for a region with their preferences."""
+    r = get_redis()
+    if not r:
+        return []
+
+    subscribers = []
+    chat_ids = r.smembers("telegram:users")
+    for chat_id in chat_ids:
+        user = get_telegram_user(chat_id)
+        if user and user.get("active") and region in user.get("regions", []):
+            subscribers.append({
+                "chat_id": chat_id,
+                "level": user.get("level", "MODERATE"),
+                "hours": user.get("hours", ["morning", "afternoon", "evening", "night"]),
+            })
+    return subscribers
+
+
+def get_telegram_subscribers_by_station(station_id: int) -> list[dict]:
+    """Get Telegram subscribers for a specific station with their preferences."""
+    r = get_redis()
+    if not r:
+        return []
+
+    subscribers = []
+    chat_ids = r.smembers("telegram:users")
+    for chat_id in chat_ids:
+        user = get_telegram_user(chat_id)
+        if user and user.get("active") and station_id in user.get("stations", []):
+            subscribers.append({
+                "chat_id": chat_id,
+                "level": user.get("level", "MODERATE"),
+                "hours": user.get("hours", ["morning", "afternoon", "evening", "night"]),
+            })
+    return subscribers
+
+
+def get_all_telegram_regions() -> list[str]:
+    """Get all regions that have Telegram subscribers."""
+    r = get_redis()
+    if not r:
+        return []
+
+    regions = set()
+    chat_ids = r.smembers("telegram:users")
+    for chat_id in chat_ids:
+        user = get_telegram_user(chat_id)
+        if user and user.get("active"):
+            for region in user.get("regions", []):
+                regions.add(region)
+    return list(regions)
+
+
+def get_all_telegram_stations() -> list[int]:
+    """Get all station IDs that have Telegram subscribers."""
+    r = get_redis()
+    if not r:
+        return []
+
+    stations = set()
+    chat_ids = r.smembers("telegram:users")
+    for chat_id in chat_ids:
+        user = get_telegram_user(chat_id)
+        if user and user.get("active"):
+            for station_id in user.get("stations", []):
+                stations.add(station_id)
+    return list(stations)
+
+
+def send_telegram_message(chat_id: str, message: str) -> dict:
+    """Send a message via Telegram Bot API."""
+    if not TELEGRAM_BOT_TOKEN:
+        return {"status": "skipped", "reason": "No Telegram token"}
+    try:
+        response = httpx.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "Markdown",
+            },
+            timeout=10.0,
+        )
+        return {
+            "status": "sent" if response.status_code == 200 else "failed",
+            "code": response.status_code,
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def send_telegram_alerts(message: str, chat_ids: list[str]) -> dict:
+    """Send alerts to multiple Telegram recipients."""
+    results = []
+    for chat_id in chat_ids:
+        result = send_telegram_message(chat_id, message)
+        result["chat_id"] = chat_id
+        results.append(result)
+    return {"results": results}
+
+
+def get_telegram_last_alert_time(station_id: int, chat_id: str) -> Optional[str]:
+    """Get the last time we sent an alert for this station to this Telegram user."""
+    r = get_redis()
+    if not r:
+        return None
+    return r.hget(f"telegram:last_alert:{chat_id}", str(station_id))
+
+
+def set_telegram_last_alert_time(station_id: int, chat_id: str, timestamp: str):
+    """Record when we sent an alert for this station to this Telegram user."""
+    r = get_redis()
+    if r:
+        r.hset(f"telegram:last_alert:{chat_id}", str(station_id), timestamp)
+        r.expire(f"telegram:last_alert:{chat_id}", 86400)
+
+
+def should_send_telegram_alert(station_id: int, chat_id: str) -> bool:
+    """Check if we should send a Telegram alert (2 hour anti-spam)."""
+    last_time = get_telegram_last_alert_time(station_id, chat_id)
+    if not last_time:
+        return True
+
+    try:
+        last_ts = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
+        hours_since = (datetime.now(ISRAEL_TZ) - last_ts).total_seconds() / 3600
+        return hours_since >= 2
+    except:
+        return True
 
 
 # ============================================================================
@@ -663,14 +835,22 @@ def main(args: dict) -> dict:
     language = args.get("language") or os.environ.get("LANGUAGE", "he")
     current_time_window = get_current_time_window()
 
-    # Get all subscribers from Redis (grouped by region AND station)
+    # Get all WhatsApp subscribers from Redis (grouped by region AND station)
     subscribers_by_region = get_all_subscribers()
     subscribers_by_station = get_station_subscribers()
 
     active_regions = list(subscribers_by_region.keys())
     active_station_ids = list(subscribers_by_station.keys())
 
-    if not active_regions and not active_station_ids:
+    # Get all Telegram subscribers
+    telegram_regions = get_all_telegram_regions()
+    telegram_stations = get_all_telegram_stations()
+
+    # Combine active regions and stations from both platforms
+    all_active_regions = list(set(active_regions + telegram_regions))
+    all_active_station_ids = list(set(active_station_ids + telegram_stations))
+
+    if not all_active_regions and not all_active_station_ids:
         return {
             "statusCode": 200,
             "body": {
@@ -689,15 +869,15 @@ def main(args: dict) -> dict:
     stations_to_check = []
     seen_station_ids = set()
 
-    # Add stations from active regions
+    # Add stations from active regions (both WhatsApp and Telegram)
     for s in all_stations:
-        if s["region"] in active_regions:
+        if s["region"] in all_active_regions:
             stations_to_check.append(s)
             seen_station_ids.add(s["id"])
 
     # Add specific stations that have subscribers (if not already included)
     for s in all_stations:
-        if s["id"] in active_station_ids and s["id"] not in seen_station_ids:
+        if s["id"] in all_active_station_ids and s["id"] not in seen_station_ids:
             stations_to_check.append(s)
             seen_station_ids.add(s["id"])
 
@@ -706,7 +886,8 @@ def main(args: dict) -> dict:
 
     # Send alerts to subscribers based on their individual thresholds, hours, and anti-spam
     alerts_sent = []
-    total_notifications = 0
+    total_whatsapp_notifications = 0
+    total_telegram_notifications = 0
     skipped_due_to_hours = 0
     skipped_due_to_recent_alert = 0
 
@@ -717,8 +898,10 @@ def main(args: dict) -> dict:
         level = reading["level"]
         timestamp = reading["timestamp"]
 
-        recipients_to_notify = []
+        whatsapp_recipients = []
+        telegram_recipients = []
 
+        # ===== WhatsApp Subscribers =====
         # Get region subscribers with their preferences
         region_subscribers = get_subscribers_with_preferences(region)
         for s in region_subscribers:
@@ -728,54 +911,94 @@ def main(args: dict) -> dict:
                 elif not should_send_alert(station_id, s["phone"], level):
                     skipped_due_to_recent_alert += 1
                 else:
-                    recipients_to_notify.append(s["phone"])
+                    whatsapp_recipients.append(s["phone"])
 
         # Get station-specific subscribers with their preferences
         station_subscribers = get_station_subscribers_with_preferences(station_id)
         for s in station_subscribers:
-            if s["phone"] not in recipients_to_notify:  # Avoid duplicates
+            if s["phone"] not in whatsapp_recipients:  # Avoid duplicates
                 if should_alert(aqi, s["level"]):
                     if not is_within_user_hours(s["hours"]):
                         skipped_due_to_hours += 1
                     elif not should_send_alert(station_id, s["phone"], level):
                         skipped_due_to_recent_alert += 1
                     else:
-                        recipients_to_notify.append(s["phone"])
+                        whatsapp_recipients.append(s["phone"])
 
-        if recipients_to_notify:
-            message = format_alert_message(reading, language)
-            result = send_twilio_whatsapp(message, recipients_to_notify)
-            total_notifications += len(recipients_to_notify)
+        # ===== Telegram Subscribers =====
+        # Get region subscribers
+        telegram_region_subs = get_telegram_subscribers_by_region(region)
+        for s in telegram_region_subs:
+            if should_alert(aqi, s["level"]):
+                if not is_within_user_hours(s["hours"]):
+                    skipped_due_to_hours += 1
+                elif not should_send_telegram_alert(station_id, s["chat_id"]):
+                    skipped_due_to_recent_alert += 1
+                else:
+                    telegram_recipients.append(s["chat_id"])
 
+        # Get station-specific subscribers
+        telegram_station_subs = get_telegram_subscribers_by_station(station_id)
+        for s in telegram_station_subs:
+            if s["chat_id"] not in telegram_recipients:  # Avoid duplicates
+                if should_alert(aqi, s["level"]):
+                    if not is_within_user_hours(s["hours"]):
+                        skipped_due_to_hours += 1
+                    elif not should_send_telegram_alert(station_id, s["chat_id"]):
+                        skipped_due_to_recent_alert += 1
+                    else:
+                        telegram_recipients.append(s["chat_id"])
+
+        # Send alerts
+        message = format_alert_message(reading, language)
+        whatsapp_result = None
+        telegram_result = None
+
+        if whatsapp_recipients:
+            whatsapp_result = send_twilio_whatsapp(message, whatsapp_recipients)
+            total_whatsapp_notifications += len(whatsapp_recipients)
             # Record alert time for anti-spam
-            for phone in recipients_to_notify:
+            for phone in whatsapp_recipients:
                 set_last_alert_time(station_id, phone, timestamp)
 
+        if telegram_recipients:
+            telegram_result = send_telegram_alerts(message, telegram_recipients)
+            total_telegram_notifications += len(telegram_recipients)
+            # Record alert time for anti-spam
+            for chat_id in telegram_recipients:
+                set_telegram_last_alert_time(station_id, chat_id, timestamp)
+
+        if whatsapp_recipients or telegram_recipients:
             alerts_sent.append({
                 "station": reading["station"].get("nameEn", reading["station"]["name"]),
                 "region": region,
                 "aqi": aqi,
                 "level": level,
                 "pollutants": reading.get("pollutants", {}),
-                "recipients_count": len(recipients_to_notify),
-                "notification": result,
+                "whatsapp_recipients": len(whatsapp_recipients),
+                "telegram_recipients": len(telegram_recipients),
+                "whatsapp_result": whatsapp_result,
+                "telegram_result": telegram_result,
             })
 
     total_region_subs = sum(len(s) for s in subscribers_by_region.values())
     total_station_subs = sum(len(s) for s in subscribers_by_station.values())
+    total_telegram_subs = len(get_redis().smembers("telegram:users")) if get_redis() else 0
 
     return {
         "statusCode": 200,
         "body": {
             "timestamp": datetime.now(ISRAEL_TZ).isoformat(),
             "current_time_window": current_time_window,
-            "active_regions": active_regions,
-            "active_stations": active_station_ids,
-            "total_subscribers": total_region_subs + total_station_subs,
+            "active_regions": all_active_regions,
+            "active_stations": all_active_station_ids,
+            "whatsapp_subscribers": total_region_subs + total_station_subs,
+            "telegram_subscribers": total_telegram_subs,
             "stations_checked": len(readings),
             "stations_available": len(all_stations),
             "alerts_triggered": len(alerts_sent),
-            "total_notifications": total_notifications,
+            "whatsapp_notifications": total_whatsapp_notifications,
+            "telegram_notifications": total_telegram_notifications,
             "skipped_due_to_hours": skipped_due_to_hours,
             "skipped_due_to_recent_alert": skipped_due_to_recent_alert,
             "alerts_sent": alerts_sent,
