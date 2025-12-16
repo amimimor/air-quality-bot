@@ -232,38 +232,8 @@ HOURS_MESSAGE = """🕐 *שלב 3: שעות התראה*
 שלחו מספרים מופרדים בפסיק (לדוגמה: 1,2,3)
 או "תמיד" לכל השעות"""
 
-COMPLETE_MESSAGE = """✅ *ההרשמה הושלמה!*
-
-{status}
-
-תקבלו התראות כשאיכות האוויר תרד מתחת לסף שהגדרתם.
-
-📌 *פקודות:*
-• /status - הצגת ההגדרות
-• /change - שינוי ההגדרות
-• /stop - הפסקת ההתראות
-• /start - התחלה מחדש"""
-
-EXISTING_USER_MESSAGE = """👋 שלום! יש לך כבר הגדרות פעילות:
-
-{status}
-
-📌 *פקודות:*
-• /status - הצגת ההגדרות
-• /change - שינוי ההגדרות
-• /regions - שינוי האזורים/ערים
-• /level - שינוי סף ההתראה
-• /hours - שינוי שעות ההתראה
-• /stop - הפסקת ההתראות"""
-
-STOPPED_MESSAGE = """⏹️ ההתראות הופסקו.
-
-שלחו /start כדי להתחיל מחדש."""
-
-HELP_MESSAGE = """🌬️ *בוט התראות איכות אוויר*
-
-📌 *פקודות:*
-• /start - התחלת הרשמה
+# Centralized commands list - single source of truth
+COMMANDS_TEXT = """📌 *פקודות:*
 • /now - מצב איכות האוויר כרגע
 • /status - הצגת ההגדרות
 • /change - שינוי כל ההגדרות
@@ -271,7 +241,29 @@ HELP_MESSAGE = """🌬️ *בוט התראות איכות אוויר*
 • /level - שינוי סף התראה
 • /hours - שינוי שעות
 • /stop - הפסקת התראות
-• /help - עזרה
+• /help - עזרה"""
+
+COMPLETE_MESSAGE = f"""✅ *ההרשמה הושלמה!*
+
+{{status}}
+
+תקבלו התראות כשאיכות האוויר תרד מתחת לסף שהגדרתם.
+
+{COMMANDS_TEXT}"""
+
+EXISTING_USER_MESSAGE = f"""👋 שלום! יש לך כבר הגדרות פעילות:
+
+{{status}}
+
+{COMMANDS_TEXT}"""
+
+STOPPED_MESSAGE = """⏹️ ההתראות הופסקו.
+
+שלחו /start כדי להתחיל מחדש."""
+
+HELP_MESSAGE = f"""🌬️ *בוט התראות איכות אוויר*
+
+{COMMANDS_TEXT}
 
 המידע מבוסס על נתוני משרד הגנת הסביבה."""
 
@@ -722,11 +714,16 @@ def get_current_readings(user: dict) -> str:
     if not api_token:
         return "❌ שגיאה בגישה ל-API. נסו שוב מאוחר יותר."
 
-    # Get stations to check
-    station_ids = list(stations) if stations else []
+    # Pre-load stations cache for name lookups
+    get_stations_by_region()
 
-    # If regions specified, get stations in those regions
-    if regions and not stations:
+    # Get stations to check - prioritize user's specific stations
+    station_ids = []
+    if stations:
+        # User has specific stations selected
+        station_ids = [int(s) for s in stations]  # Ensure integers
+    elif regions:
+        # User has regions - get representative stations
         by_region = get_stations_by_region()
         for region in regions:
             region_stations = by_region.get(region, [])
