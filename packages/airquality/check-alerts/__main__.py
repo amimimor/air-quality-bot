@@ -564,22 +564,24 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
     pollutants = reading.get("pollutants", {})
 
     if language == "he":
+        # Use RTL mark (\u200f) to ensure consistent right-to-left alignment
+        rtl = "\u200f"
         pollutant_lines = []
         if pollutants.get("PM2.5"):
-            pollutant_lines.append(f"• PM2.5: {pollutants['PM2.5']:.1f} µg/m³")
+            pollutant_lines.append(f"{rtl}• חלקיקים עדינים (PM2.5): {pollutants['PM2.5']:.1f} מק\"ג/מ\"ק")
         if pollutants.get("PM10"):
-            pollutant_lines.append(f"• PM10: {pollutants['PM10']:.1f} µg/m³")
+            pollutant_lines.append(f"{rtl}• חלקיקים (PM10): {pollutants['PM10']:.1f} מק\"ג/מ\"ק")
         if pollutants.get("O3"):
-            pollutant_lines.append(f"• אוזון (O3): {pollutants['O3']:.1f} ppb")
+            pollutant_lines.append(f"{rtl}• אוזון (O3): {pollutants['O3']:.1f} ppb")
         if pollutants.get("NO2"):
-            pollutant_lines.append(f"• חנקן דו-חמצני (NO2): {pollutants['NO2']:.1f} ppb")
+            pollutant_lines.append(f"{rtl}• חנקן דו-חמצני (NO2): {pollutants['NO2']:.1f} ppb")
         if pollutants.get("SO2"):
-            pollutant_lines.append(f"• גופרית דו-חמצנית (SO2): {pollutants['SO2']:.1f} ppb")
+            pollutant_lines.append(f"{rtl}• גופרית דו-חמצנית (SO2): {pollutants['SO2']:.1f} ppb")
         if pollutants.get("CO"):
-            pollutant_lines.append(f"• פחמן חד-חמצני (CO): {pollutants['CO']:.1f} ppm")
+            pollutant_lines.append(f"{rtl}• פחמן חד-חמצני (CO): {pollutants['CO']:.1f} ppm")
         benzene_val = pollutants.get("BENZENE") or pollutants.get("Benzene")
         if benzene_val:
-            pollutant_lines.append(f"• בנזן (Benzene): {benzene_val:.1f} µg/m³")
+            pollutant_lines.append(f"{rtl}• בנזן: {benzene_val:.1f} מק\"ג/מ\"ק")
 
         pollutants_str = "\n".join(pollutant_lines) if pollutant_lines else "אין נתונים זמינים"
 
@@ -954,7 +956,9 @@ def main(args: dict) -> dict:
         whatsapp_result = None
         telegram_result = None
 
-        if whatsapp_recipients:
+        # Only send WhatsApp if enabled
+        whatsapp_enabled = os.environ.get("WHATSAPP_ENABLED", "false").lower() == "true"
+        if whatsapp_recipients and whatsapp_enabled:
             whatsapp_result = send_twilio_whatsapp(message, whatsapp_recipients)
             total_whatsapp_notifications += len(whatsapp_recipients)
             # Record alert time for anti-spam

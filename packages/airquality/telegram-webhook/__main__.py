@@ -771,17 +771,19 @@ def get_current_readings(user: dict) -> str:
                     station_name = s.get("city") or s["name"]
                     break
 
+            # Use RTL mark for consistent alignment
+            rtl = "\u200f"
             lines.append(f"{emoji} *{station_name}*")
-            lines.append(f"   מדד: {aqi} ({level_name})")
+            lines.append(f"{rtl}   מדד: {aqi} ({level_name})")
 
-            # Show key pollutants
+            # Show key pollutants with Hebrew names
             if pollutants.get("PM2.5"):
-                lines.append(f"   PM2.5: {pollutants['PM2.5']:.1f} µg/m³")
+                lines.append(f"{rtl}   חלקיקים עדינים: {pollutants['PM2.5']:.1f} מק\"ג/מ\"ק")
             if pollutants.get("PM10"):
-                lines.append(f"   PM10: {pollutants['PM10']:.1f} µg/m³")
+                lines.append(f"{rtl}   חלקיקים: {pollutants['PM10']:.1f} מק\"ג/מ\"ק")
             benzene = pollutants.get("Benzene") or pollutants.get("BENZENE")
             if benzene:
-                lines.append(f"   בנזן: {benzene:.1f} µg/m³")
+                lines.append(f"{rtl}   בנזן: {benzene:.1f} מק\"ג/מ\"ק")
             lines.append("")
 
         except Exception as e:
