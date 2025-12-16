@@ -379,12 +379,13 @@ def get_region_names(region_ids: List[str]) -> str:
 
 
 def get_station_names(station_ids: List[int]) -> str:
-    """Get Hebrew names for station IDs from cached data."""
+    """Get display names for station IDs from cached data."""
     stations = _stations_cache.get("stations", [])
     names = []
     for s in stations:
         if s["id"] in station_ids:
-            names.append(s.get("city") or s["name"])
+            # Use display_name which includes "Station, City" format
+            names.append(s.get("display_name") or s.get("city") or s["name"])
     return ", ".join(names) if names else "אין"
 
 
@@ -394,7 +395,7 @@ def get_location_display(user: dict) -> str:
     stations = user.get("stations", [])
 
     if stations:
-        return f"🏙️ ערים: {get_station_names(stations)}"
+        return f"📍 תחנות: {get_station_names(stations)}"
     elif regions:
         return f"🗺️ אזורים: {get_region_names(regions)}"
     else:
