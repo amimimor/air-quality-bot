@@ -264,6 +264,7 @@ HELP_MESSAGE = """🌬️ *בוט התראות איכות אוויר*
 
 📌 *פקודות:*
 • /start - התחלת הרשמה
+• /now - מצב איכות האוויר כרגע
 • /status - הצגת ההגדרות
 • /change - שינוי כל ההגדרות
 • /regions - שינוי אזורים/ערים
@@ -652,6 +653,147 @@ def handle_message(chat_id: str, text: str) -> str:
     return WELCOME_MESSAGE
 
 
+def calculate_aqi(pollutants: dict) -> int:
+    """Calculate Air Quality Index based on pollutant values."""
+    pm25 = pollutants.get("PM2.5")
+    pm10 = pollutants.get("PM10")
+    o3 = pollutants.get("O3")
+    no2 = pollutants.get("NO2")
+    benzene = pollutants.get("BENZENE") or pollutants.get("Benzene")
+
+    scores = []
+
+    if pm25 is not None:
+        if pm25 <= 12: scores.append(100)
+        elif pm25 <= 35: scores.append(75 - int((pm25 - 12) * 1.5))
+        elif pm25 <= 55: scores.append(50 - int((pm25 - 35) * 2.5))
+        elif pm25 <= 150: scores.append(0 - int((pm25 - 55) * 2))
+        else: scores.append(-400)
+
+    if pm10 is not None:
+        if pm10 <= 50: scores.append(100)
+        elif pm10 <= 100: scores.append(75 - int((pm10 - 50) * 0.5))
+        elif pm10 <= 150: scores.append(50 - int((pm10 - 100) * 1))
+        else: scores.append(0 - int((pm10 - 150) * 2))
+
+    if o3 is not None:
+        if o3 <= 60: scores.append(100)
+        elif o3 <= 80: scores.append(75 - int((o3 - 60)))
+        elif o3 <= 100: scores.append(55 - int((o3 - 80) * 2.5))
+        else: scores.append(0 - int((o3 - 100) * 2))
+
+    if no2 is not None:
+        if no2 <= 53: scores.append(100)
+        elif no2 <= 100: scores.append(75 - int((no2 - 53) * 0.5))
+        elif no2 <= 150: scores.append(50 - int((no2 - 100) * 1))
+        else: scores.append(0 - int((no2 - 150) * 2))
+
+    if benzene is not None:
+        if benzene <= 1: scores.append(100)
+        elif benzene <= 3: scores.append(75 - int((benzene - 1) * 12.5))
+        elif benzene <= 5: scores.append(50 - int((benzene - 3) * 25))
+        elif benzene <= 10: scores.append(0 - int((benzene - 5) * 40))
+        else: scores.append(-400)
+
+    return min(scores) if scores else 50
+
+
+def get_aqi_level(aqi: int) -> tuple:
+    """Get AQI level name and emoji."""
+    if aqi >= 51:
+        return "טוב", "🟢"
+    elif aqi >= 0:
+        return "בינוני", "🟡"
+    elif aqi >= -200:
+        return "לא בריא", "🟠"
+    else:
+        return "מסוכן", "🔴"
+
+
+def get_current_readings(user: dict) -> str:
+    """Fetch and format current air quality readings for user's locations."""
+    stations = user.get("stations", [])
+    regions = user.get("regions", [])
+
+    if not stations and not regions:
+        return "❌ לא הגדרת אזורים או ערים. שלחו /change לשינוי ההגדרות."
+
+    api_token = get_api_token()
+    if not api_token:
+        return "❌ שגיאה בגישה ל-API. נסו שוב מאוחר יותר."
+
+    # Get stations to check
+    station_ids = list(stations) if stations else []
+
+    # If regions specified, get stations in those regions
+    if regions and not stations:
+        by_region = get_stations_by_region()
+        for region in regions:
+            region_stations = by_region.get(region, [])
+            # Take first 3 stations per region
+            for s in region_stations[:3]:
+                if s["id"] not in station_ids:
+                    station_ids.append(s["id"])
+
+    if not station_ids:
+        return "❌ לא נמצאו תחנות לבדיקה."
+
+    lines = ["📊 *מצב איכות האוויר כרגע:*", ""]
+
+    for station_id in station_ids[:5]:  # Limit to 5 stations
+        try:
+            response = httpx.get(
+                f"{AIR_API_URL}/stations/{station_id}/data/latest",
+                headers={"Authorization": f"ApiToken {api_token}"},
+                timeout=10.0,
+            )
+            if response.status_code != 200:
+                continue
+
+            data = response.json().get("data", [])
+            if not data:
+                continue
+
+            channels = data[0].get("channels", [])
+            pollutants = {c["name"]: c["value"] for c in channels if c.get("valid")}
+
+            if not pollutants:
+                continue
+
+            aqi = calculate_aqi(pollutants)
+            level_name, emoji = get_aqi_level(aqi)
+
+            # Get station name
+            station_name = str(station_id)
+            all_stations = _stations_cache.get("stations", [])
+            for s in all_stations:
+                if s["id"] == station_id:
+                    station_name = s.get("city") or s["name"]
+                    break
+
+            lines.append(f"{emoji} *{station_name}*")
+            lines.append(f"   מדד: {aqi} ({level_name})")
+
+            # Show key pollutants
+            if pollutants.get("PM2.5"):
+                lines.append(f"   PM2.5: {pollutants['PM2.5']:.1f} µg/m³")
+            if pollutants.get("PM10"):
+                lines.append(f"   PM10: {pollutants['PM10']:.1f} µg/m³")
+            benzene = pollutants.get("Benzene") or pollutants.get("BENZENE")
+            if benzene:
+                lines.append(f"   בנזן: {benzene:.1f} µg/m³")
+            lines.append("")
+
+        except Exception as e:
+            continue
+
+    if len(lines) <= 2:
+        return "❌ לא הצלחתי לקבל נתונים. נסו שוב מאוחר יותר."
+
+    lines.append("🔗 https://air.sviva.gov.il")
+    return "\n".join(lines)
+
+
 def handle_command(chat_id: str, command: str) -> str:
     """Handle Telegram commands."""
     user = get_user(chat_id)
@@ -698,6 +840,11 @@ def handle_command(chat_id: str, command: str) -> str:
 
     elif command == "/help":
         return HELP_MESSAGE
+
+    elif command == "/now":
+        if not user:
+            return "❌ אינך רשום עדיין. שלחו /start להרשמה."
+        return get_current_readings(user)
 
     return "❌ פקודה לא מוכרת. שלחו /help לרשימת הפקודות."
 
