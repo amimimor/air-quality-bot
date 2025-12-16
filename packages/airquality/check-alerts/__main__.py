@@ -472,7 +472,11 @@ def fetch_readings(stations: list[dict]) -> list[dict]:
                 for channel in channels:
                     name = channel.get("name", "").upper()
                     value = channel.get("value")
+                    units = channel.get("units", "")
                     if value is not None and channel.get("valid", False):
+                        # Convert Benzene from ppb to µg/m³ (factor: 3.19 at 25°C)
+                        if name == "BENZENE" and units == "ppb":
+                            value = float(value) * 3.19
                         pollutants[name] = float(value)
 
                 aqi = calculate_aqi(pollutants)
@@ -610,6 +614,8 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
 {recommendations_he[level]}
 
 🔗 https://air.sviva.gov.il
+
+💬 /help לעזרה
 """.strip()
 
     # English version

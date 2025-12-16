@@ -753,7 +753,16 @@ def get_current_readings(user: dict) -> str:
                 continue
 
             channels = data[0].get("channels", [])
-            pollutants = {c["name"]: c["value"] for c in channels if c.get("valid")}
+            pollutants = {}
+            for c in channels:
+                if c.get("valid"):
+                    name = c["name"]
+                    value = c["value"]
+                    units = c.get("units", "")
+                    # Convert Benzene from ppb to µg/m³ (factor: 3.19 at 25°C)
+                    if name.upper() == "BENZENE" and units == "ppb":
+                        value = value * 3.19
+                    pollutants[name] = value
 
             if not pollutants:
                 continue
