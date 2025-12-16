@@ -467,17 +467,18 @@ def fetch_readings(stations: list[dict]) -> list[dict]:
                 channels = data_list[0].get("channels", [])
                 timestamp = data_list[0].get("datetime", datetime.now(ISRAEL_TZ).isoformat())
 
-                # Collect all pollutants
+                # Collect all pollutants with their metadata
                 pollutants = {}
+                pollutant_meta = {}  # Store alias and units
                 for channel in channels:
-                    name = channel.get("name", "").upper()
+                    name = channel.get("name", "")
                     value = channel.get("value")
-                    units = channel.get("units", "")
                     if value is not None and channel.get("valid", False):
-                        # Convert Benzene from ppb to µg/m³ (factor: 3.19 at 25°C)
-                        if name == "BENZENE" and units == "ppb":
-                            value = float(value) * 3.19
-                        pollutants[name] = float(value)
+                        pollutants[name.upper()] = float(value)
+                        pollutant_meta[name.upper()] = {
+                            "alias": channel.get("alias", name),
+                            "units": channel.get("units", ""),
+                        }
 
                 aqi = calculate_aqi(pollutants)
 
@@ -486,6 +487,7 @@ def fetch_readings(stations: list[dict]) -> list[dict]:
                     "aqi": aqi,
                     "level": get_alert_level(aqi),
                     "pollutants": pollutants,
+                    "pollutant_meta": pollutant_meta,
                     "pm25": pollutants.get("PM2.5", 0),
                     "pm10": pollutants.get("PM10", 0),
                     "o3": pollutants.get("O3", 0),
@@ -576,26 +578,21 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
 
     # Build pollutants string based on what's available
     pollutants = reading.get("pollutants", {})
+    pollutant_meta = reading.get("pollutant_meta", {})
 
     if language == "he":
         # Use RTL mark (\u200f) to ensure consistent right-to-left alignment
         rtl = "\u200f"
         pollutant_lines = []
-        if pollutants.get("PM2.5"):
-            pollutant_lines.append(f"{rtl}• חלקיקים עדינים (PM2.5): {pollutants['PM2.5']:.1f} מק\"ג/מ\"ק")
-        if pollutants.get("PM10"):
-            pollutant_lines.append(f"{rtl}• חלקיקים (PM10): {pollutants['PM10']:.1f} מק\"ג/מ\"ק")
-        if pollutants.get("O3"):
-            pollutant_lines.append(f"{rtl}• אוזון (O3): {pollutants['O3']:.1f} ppb")
-        if pollutants.get("NO2"):
-            pollutant_lines.append(f"{rtl}• חנקן דו-חמצני (NO2): {pollutants['NO2']:.1f} ppb")
-        if pollutants.get("SO2"):
-            pollutant_lines.append(f"{rtl}• גופרית דו-חמצנית (SO2): {pollutants['SO2']:.1f} ppb")
-        if pollutants.get("CO"):
-            pollutant_lines.append(f"{rtl}• פחמן חד-חמצני (CO): {pollutants['CO']:.1f} ppm")
-        benzene_val = pollutants.get("BENZENE") or pollutants.get("Benzene")
-        if benzene_val:
-            pollutant_lines.append(f"{rtl}• בנזן: {benzene_val:.1f} מק\"ג/מ\"ק")
+
+        # Use original Hebrew aliases and units from API
+        for name in ["PM2.5", "PM10", "O3", "NO2", "SO2", "CO", "BENZENE"]:
+            value = pollutants.get(name)
+            if value:
+                meta = pollutant_meta.get(name, {})
+                alias = meta.get("alias", name)
+                units = meta.get("units", "")
+                pollutant_lines.append(f"{rtl}• {alias}: {value:.1f} {units}")
 
         pollutants_str = "\n".join(pollutant_lines) if pollutant_lines else "אין נתונים זמינים"
 

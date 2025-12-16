@@ -754,15 +754,15 @@ def get_current_readings(user: dict) -> str:
 
             channels = data[0].get("channels", [])
             pollutants = {}
+            pollutant_meta = {}
             for c in channels:
                 if c.get("valid"):
-                    name = c["name"]
-                    value = c["value"]
-                    units = c.get("units", "")
-                    # Convert Benzene from ppb to µg/m³ (factor: 3.19 at 25°C)
-                    if name.upper() == "BENZENE" and units == "ppb":
-                        value = value * 3.19
-                    pollutants[name] = value
+                    name = c["name"].upper()
+                    pollutants[name] = c["value"]
+                    pollutant_meta[name] = {
+                        "alias": c.get("alias", c["name"]),
+                        "units": c.get("units", ""),
+                    }
 
             if not pollutants:
                 continue
@@ -784,14 +784,14 @@ def get_current_readings(user: dict) -> str:
             lines.append(f"{emoji} *{station_name}*")
             lines.append(f"{rtl}   מדד: {aqi} ({level_name})")
 
-            # Show key pollutants with Hebrew names
-            if pollutants.get("PM2.5"):
-                lines.append(f"{rtl}   חלקיקים עדינים: {pollutants['PM2.5']:.1f} מק\"ג/מ\"ק")
-            if pollutants.get("PM10"):
-                lines.append(f"{rtl}   חלקיקים: {pollutants['PM10']:.1f} מק\"ג/מ\"ק")
-            benzene = pollutants.get("Benzene") or pollutants.get("BENZENE")
-            if benzene:
-                lines.append(f"{rtl}   בנזן: {benzene:.1f} מק\"ג/מ\"ק")
+            # Show pollutants with original Hebrew aliases and units
+            for name in ["PM2.5", "PM10", "BENZENE"]:
+                value = pollutants.get(name)
+                if value:
+                    meta = pollutant_meta.get(name, {})
+                    alias = meta.get("alias", name)
+                    units = meta.get("units", "")
+                    lines.append(f"{rtl}   {alias}: {value:.1f} {units}")
             lines.append("")
 
         except Exception as e:
