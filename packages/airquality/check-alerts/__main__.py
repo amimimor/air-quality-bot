@@ -604,6 +604,20 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
     if benzene_emoji and severity_order.get(benzene_emoji, 0) > severity_order.get(emoji, 0):
         emoji = benzene_emoji
 
+    # Determine overall level (worst of AQI or Benzene)
+    benzene_level_text_he = {"GOOD": "מוגבר", "MODERATE": "גבוה", "LOW": "גבוה מאוד", "VERY_LOW": "מסוכן"}
+    aqi_severity = {"GOOD": 0, "MODERATE": 1, "LOW": 2, "VERY_LOW": 3}
+    benzene_severity = {"GOOD": 1, "MODERATE": 2, "LOW": 3, "VERY_LOW": 4}
+
+    overall_level = level
+    overall_level_he = level_text_he[level]
+    recommendation_level = level
+    if benzene_level and benzene_severity.get(benzene_level, 0) > aqi_severity.get(level, 0):
+        overall_level_he = benzene_level_text_he[benzene_level]
+        # Use benzene recommendations for worst case
+        if benzene_level in ["LOW", "VERY_LOW"]:
+            recommendation_level = benzene_level
+
     if language == "he":
         # Use RTL mark (\u200f) to ensure consistent right-to-left alignment
         rtl = "\u200f"
@@ -621,19 +635,25 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
 
         pollutants_str = "\n".join(pollutant_lines) if pollutant_lines else "אין נתונים זמינים"
 
+        # Show benzene line if elevated
+        benzene_line = ""
+        if benzene_level:
+            benzene_line = f"\n⚗️ *בנזן:* {benzene_level_text_he[benzene_level]}"
+
         return f"""
 {emoji} *התראת איכות אוויר*
 
 📍 *תחנה:* {station.get('display_name', station['name'])}
 🗺️ *אזור:* {station.get('regionHe', 'לא ידוע')}
-📊 *מדד:* {reading['aqi']} ({level_text_he[level]})
+📊 *איכות:* {overall_level_he}
+🌬️ *מדד AQI:* {reading['aqi']} ({level_text_he[level]}){benzene_line}
 🕐 *זמן:* {reading['timestamp'][:16]}
 
 *מזהמים:*
 {pollutants_str}
 
 💡 *המלצה:*
-{recommendations_he[level]}
+{recommendations_he[recommendation_level]}
 
 🔗 https://air.sviva.gov.il
 
