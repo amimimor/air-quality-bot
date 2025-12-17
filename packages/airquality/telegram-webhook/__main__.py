@@ -829,24 +829,21 @@ def get_current_readings(user: dict) -> str:
             if benzene_emoji and severity_order.get(benzene_emoji, 0) > severity_order.get(emoji, 0):
                 overall_emoji = benzene_emoji
 
-            # Use RTL mark for consistent alignment
-            rtl = "\u200f"
             lines.append(f"{overall_emoji} *{station_name}*")
-            lines.append(f"{rtl}   📊 מדד: {aqi} ({level_name})")
+            lines.append(f"📊 מדד: {aqi} ({level_name})")
 
             # Show benzene level if elevated
             if benzene_level_name:
-                lines.append(f"{rtl}   ⚗️ בנזן: {benzene_level_name}")
+                lines.append(f"⚗️ בנזן: {benzene_level_name}")
 
-            # Show ALL pollutants with transformed Hebrew aliases
-            lines.append(f"{rtl}   *מזהמים:*")
+            # Show pollutants with transformed Hebrew aliases
             for name, value in pollutants.items():
                 if value is not None:
                     meta = pollutant_meta.get(name, {})
                     original_alias = meta.get("alias", name)
                     alias = transform_pollutant_alias(name, original_alias)
                     units = meta.get("units", "")
-                    lines.append(f"{rtl}   • {alias}: {value:.1f} {units}")
+                    lines.append(f"• {alias}: {value:.1f} {units}")
             lines.append("")
 
         except Exception as e:
