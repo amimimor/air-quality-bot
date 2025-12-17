@@ -696,7 +696,7 @@ def format_benzene_alert_message(reading: dict, language: str = "en") -> str:
 📍 *תחנה:* {station.get('display_name', station['name'])}
 🗺️ *אזור:* {station.get('regionHe', 'לא ידוע')}
 ⚗️ *בנזן:* {benzene_ppb:.2f} ppb ({benzene_ugm3:.1f} µg/m³)
-{rtl}   רמה: {level_text_he[benzene_level]}
+📊 *רמה:* {level_text_he[benzene_level]}
 🕐 *זמן:* {reading['timestamp'][:16]}
 
 💡 *המלצה:*
