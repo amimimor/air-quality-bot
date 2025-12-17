@@ -604,8 +604,9 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
     if benzene_emoji and severity_order.get(benzene_emoji, 0) > severity_order.get(emoji, 0):
         emoji = benzene_emoji
 
-    # Determine overall level (worst of AQI or Benzene)
-    benzene_level_text_he = {"GOOD": "מוגבר", "MODERATE": "גבוה", "LOW": "גבוה מאוד", "VERY_LOW": "מסוכן"}
+    # Determine overall quality level (worst of AQI or Benzene)
+    # Map benzene levels to quality terminology (not pollution level terminology)
+    benzene_to_quality_he = {"GOOD": "בינוני", "MODERATE": "לא בריא", "LOW": "לא בריא", "VERY_LOW": "מסוכן"}
     aqi_severity = {"GOOD": 0, "MODERATE": 1, "LOW": 2, "VERY_LOW": 3}
     benzene_severity = {"GOOD": 1, "MODERATE": 2, "LOW": 3, "VERY_LOW": 4}
 
@@ -613,8 +614,9 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
     overall_level_he = level_text_he[level]
     recommendation_level = level
     if benzene_level and benzene_severity.get(benzene_level, 0) > aqi_severity.get(level, 0):
-        overall_level_he = benzene_level_text_he[benzene_level]
-        # Use benzene recommendations for worst case
+        overall_level_he = benzene_to_quality_he[benzene_level]
+        overall_level = benzene_level  # Keep for comparison
+        # Use more severe recommendations when benzene is high
         if benzene_level in ["LOW", "VERY_LOW"]:
             recommendation_level = benzene_level
 

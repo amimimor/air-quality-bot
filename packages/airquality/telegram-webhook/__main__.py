@@ -829,14 +829,15 @@ def get_current_readings(user: dict) -> str:
             if benzene_emoji and severity_order.get(benzene_emoji, 0) > severity_order.get(emoji, 0):
                 overall_emoji = benzene_emoji
 
-            # Determine overall level (worst of AQI or Benzene)
-            benzene_level_text = {"GOOD": "מוגבר", "MODERATE": "גבוה", "LOW": "גבוה מאוד", "VERY_LOW": "מסוכן"}
+            # Determine overall quality level (worst of AQI or Benzene)
+            # Map benzene levels to quality terminology
+            benzene_to_quality = {"מוגבר": "בינוני", "גבוה": "לא בריא", "גבוה מאוד": "לא בריא", "מסוכן": "מסוכן"}
             aqi_severity = {"טוב": 0, "בינוני": 1, "לא בריא לרגישים": 2, "לא בריא": 3, "מסוכן": 4}
             benzene_severity = {"מוגבר": 1, "גבוה": 2, "גבוה מאוד": 3, "מסוכן": 4}
 
             overall_level = level_name
             if benzene_level_name and benzene_severity.get(benzene_level_name, 0) > aqi_severity.get(level_name, 0):
-                overall_level = benzene_level_name
+                overall_level = benzene_to_quality.get(benzene_level_name, benzene_level_name)
 
             lines.append(f"{overall_emoji} *{station_name}*")
             lines.append(f"📊 איכות: {overall_level}")
