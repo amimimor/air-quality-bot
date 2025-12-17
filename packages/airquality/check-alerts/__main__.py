@@ -593,6 +593,17 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
     pollutants = reading.get("pollutants", {})
     pollutant_meta = reading.get("pollutant_meta", {})
 
+    # Check benzene level and use worst-case color
+    benzene_ppb = reading.get("benzene_ppb", 0)
+    benzene_level = reading.get("benzene_level")
+    benzene_emoji_map = {"GOOD": "🟡", "MODERATE": "🟠", "LOW": "🔴", "VERY_LOW": "🟣"}
+    benzene_emoji = benzene_emoji_map.get(benzene_level) if benzene_level else None
+
+    # Use worst case color between AQI and Benzene
+    severity_order = {"🟢": 0, "🟡": 1, "🟠": 2, "🔴": 3, "🟣": 4}
+    if benzene_emoji and severity_order.get(benzene_emoji, 0) > severity_order.get(emoji, 0):
+        emoji = benzene_emoji
+
     if language == "he":
         # Use RTL mark (\u200f) to ensure consistent right-to-left alignment
         rtl = "\u200f"
