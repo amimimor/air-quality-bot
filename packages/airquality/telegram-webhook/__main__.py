@@ -816,17 +816,27 @@ def get_current_readings(user: dict) -> str:
                     station_name = s.get("display_name") or s.get("city") or s["name"]
                     break
 
-            # Use RTL mark for consistent alignment
-            rtl = "\u200f"
-            lines.append(f"{emoji} *{station_name}*")
-            lines.append(f"{rtl}   📊 מדד: {aqi} ({level_name})")
-
             # Check for elevated benzene (not included in AQI)
             benzene_ppb = pollutants.get("BENZENE", 0)
+            benzene_level_name, benzene_emoji = None, None
             if benzene_ppb:
                 benzene_level_name, benzene_emoji = get_benzene_level(benzene_ppb)
-                if benzene_level_name:
-                    lines.append(f"{rtl}   ⚗️ בנזן: {benzene_level_name} {benzene_emoji}")
+
+            # Use worst case color between AQI and Benzene
+            # Severity order: 🟢 < 🟡 < 🟠 < 🔴 < 🟣
+            severity_order = {"🟢": 0, "🟡": 1, "🟠": 2, "🔴": 3, "🟣": 4}
+            overall_emoji = emoji
+            if benzene_emoji and severity_order.get(benzene_emoji, 0) > severity_order.get(emoji, 0):
+                overall_emoji = benzene_emoji
+
+            # Use RTL mark for consistent alignment
+            rtl = "\u200f"
+            lines.append(f"{overall_emoji} *{station_name}*")
+            lines.append(f"{rtl}   📊 מדד: {aqi} ({level_name})")
+
+            # Show benzene level if elevated
+            if benzene_level_name:
+                lines.append(f"{rtl}   ⚗️ בנזן: {benzene_level_name}")
 
             # Show ALL pollutants with transformed Hebrew aliases
             lines.append(f"{rtl}   *מזהמים:*")
