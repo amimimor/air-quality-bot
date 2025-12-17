@@ -904,12 +904,57 @@ def set_telegram_last_alert_time(station_id: int, chat_id: str, timestamp: str):
         r.expire(f"telegram:last_alert:{chat_id}", 86400)
 
 
-def should_send_telegram_alert(station_id: int, chat_id: str) -> bool:
-    """Check if we should send a Telegram alert (2 hour anti-spam)."""
-    last_time = get_telegram_last_alert_time(station_id, chat_id)
+def get_telegram_last_alert_info(station_id: int, chat_id: str) -> tuple:
+    """Get the last alert info for this station/user. Returns (timestamp, overall_level)."""
+    r = get_redis()
+    if not r:
+        return None, None
+    data = r.hget(f"telegram:last_alert:{chat_id}", str(station_id))
+    if not data:
+        return None, None
+    # Format: "timestamp|level" e.g., "2025-12-17T20:30:00+02:00|VERY_LOW"
+    if "|" in data:
+        parts = data.split("|")
+        return parts[0], parts[1] if len(parts) > 1 else None
+    return data, None  # Old format without level
+
+
+def set_telegram_last_alert_info(station_id: int, chat_id: str, timestamp: str, overall_level: str):
+    """Record when we sent an alert and what level it was."""
+    r = get_redis()
+    if r:
+        r.hset(f"telegram:last_alert:{chat_id}", str(station_id), f"{timestamp}|{overall_level}")
+        r.expire(f"telegram:last_alert:{chat_id}", 86400)
+
+
+def should_send_telegram_alert(station_id: int, chat_id: str, current_overall_level: str) -> bool:
+    """
+    Check if we should send a Telegram alert.
+    - Always send if no previous alert
+    - Send if 2 hours have passed (cooldown expired)
+    - Send if overall level got WORSE (even within cooldown)
+    """
+    last_time, last_level = get_telegram_last_alert_info(station_id, chat_id)
     if not last_time:
         return True
 
+    # Level severity: higher = worse
+    # Map both AQI levels and Benzene levels to unified severity
+    level_severity = {
+        "GOOD": 0, "טוב": 0,
+        "מוגבר": 1,  # Benzene elevated
+        "MODERATE": 2, "בינוני": 2, "גבוה": 2,
+        "LOW": 3, "לא בריא": 3, "גבוה מאוד": 3,
+        "VERY_LOW": 4, "מסוכן": 4,
+    }
+    current_severity = level_severity.get(current_overall_level, 0)
+    last_severity = level_severity.get(last_level, 0)
+
+    # Alert if level got worse
+    if current_severity > last_severity:
+        return True
+
+    # Otherwise, check 2-hour cooldown
     try:
         last_ts = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
         hours_since = (datetime.now(ISRAEL_TZ) - last_ts).total_seconds() / 3600
@@ -919,28 +964,51 @@ def should_send_telegram_alert(station_id: int, chat_id: str) -> bool:
 
 
 # Benzene-specific anti-spam (separate from AQI alerts)
-def get_telegram_last_benzene_alert(station_id: int, chat_id: str) -> Optional[str]:
-    """Get the last time we sent a benzene alert for this station to this Telegram user."""
+def get_telegram_last_benzene_alert(station_id: int, chat_id: str) -> tuple:
+    """Get the last benzene alert info for this station/user. Returns (timestamp, level)."""
     r = get_redis()
     if not r:
-        return None
-    return r.hget(f"telegram:last_benzene:{chat_id}", str(station_id))
+        return None, None
+    data = r.hget(f"telegram:last_benzene:{chat_id}", str(station_id))
+    if not data:
+        return None, None
+    # Format: "timestamp|level" e.g., "2025-12-17T20:30:00+02:00|VERY_LOW"
+    if "|" in data:
+        parts = data.split("|")
+        return parts[0], parts[1] if len(parts) > 1 else None
+    return data, None  # Old format without level
 
 
-def set_telegram_last_benzene_alert(station_id: int, chat_id: str, timestamp: str):
+def set_telegram_last_benzene_alert(station_id: int, chat_id: str, timestamp: str, level: str):
     """Record when we sent a benzene alert for this station to this Telegram user."""
     r = get_redis()
     if r:
-        r.hset(f"telegram:last_benzene:{chat_id}", str(station_id), timestamp)
+        # Store both timestamp and level
+        r.hset(f"telegram:last_benzene:{chat_id}", str(station_id), f"{timestamp}|{level}")
         r.expire(f"telegram:last_benzene:{chat_id}", 86400)
 
 
-def should_send_benzene_alert(station_id: int, chat_id: str) -> bool:
-    """Check if we should send a benzene alert (2 hour anti-spam)."""
-    last_time = get_telegram_last_benzene_alert(station_id, chat_id)
+def should_send_benzene_alert(station_id: int, chat_id: str, current_level: str) -> bool:
+    """
+    Check if we should send a benzene alert.
+    - Always send if no previous alert
+    - Send if 2 hours have passed (cooldown expired)
+    - Send if level got WORSE (even within cooldown)
+    """
+    last_time, last_level = get_telegram_last_benzene_alert(station_id, chat_id)
     if not last_time:
         return True
 
+    # Level severity: higher = worse
+    level_severity = {"GOOD": 1, "MODERATE": 2, "LOW": 3, "VERY_LOW": 4}
+    current_severity = level_severity.get(current_level, 0)
+    last_severity = level_severity.get(last_level, 0)
+
+    # Alert if level got worse
+    if current_severity > last_severity:
+        return True
+
+    # Otherwise, check 2-hour cooldown
     try:
         last_ts = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
         hours_since = (datetime.now(ISRAEL_TZ) - last_ts).total_seconds() / 3600
@@ -1057,54 +1125,70 @@ def main(args: dict) -> dict:
         aqi = reading["aqi"]
         level = reading["level"]
         timestamp = reading["timestamp"]
+        benzene_ppb = reading.get("benzene_ppb", 0)
+        benzene_level = reading.get("benzene_level")
+
+        # Calculate overall quality level (worst of AQI or Benzene)
+        # Severity mapping for comparison
+        aqi_severity = {"GOOD": 0, "MODERATE": 1, "LOW": 2, "VERY_LOW": 3}
+        benzene_severity = {"GOOD": 1, "MODERATE": 2, "LOW": 3, "VERY_LOW": 4}
+
+        overall_level = level  # Start with AQI level
+        if benzene_level and benzene_severity.get(benzene_level, 0) > aqi_severity.get(level, 0):
+            overall_level = benzene_level
 
         whatsapp_recipients = []
         telegram_recipients = []
 
         # ===== WhatsApp Subscribers =====
-        # Get region subscribers with their preferences
         region_subscribers = get_subscribers_with_preferences(region)
         for s in region_subscribers:
-            if should_alert(aqi, s["level"]):
+            # Alert if AQI OR Benzene triggers for user's threshold
+            should_alert_aqi = should_alert(aqi, s["level"])
+            should_alert_benz = benzene_level and should_alert_benzene(benzene_ppb, s["level"])
+            if should_alert_aqi or should_alert_benz:
                 if not is_within_user_hours(s["hours"]):
                     skipped_due_to_hours += 1
-                elif not should_send_alert(station_id, s["phone"], level):
+                elif not should_send_alert(station_id, s["phone"], overall_level):
                     skipped_due_to_recent_alert += 1
                 else:
                     whatsapp_recipients.append(s["phone"])
 
-        # Get station-specific subscribers with their preferences
         station_subscribers = get_station_subscribers_with_preferences(station_id)
         for s in station_subscribers:
-            if s["phone"] not in whatsapp_recipients:  # Avoid duplicates
-                if should_alert(aqi, s["level"]):
+            if s["phone"] not in whatsapp_recipients:
+                should_alert_aqi = should_alert(aqi, s["level"])
+                should_alert_benz = benzene_level and should_alert_benzene(benzene_ppb, s["level"])
+                if should_alert_aqi or should_alert_benz:
                     if not is_within_user_hours(s["hours"]):
                         skipped_due_to_hours += 1
-                    elif not should_send_alert(station_id, s["phone"], level):
+                    elif not should_send_alert(station_id, s["phone"], overall_level):
                         skipped_due_to_recent_alert += 1
                     else:
                         whatsapp_recipients.append(s["phone"])
 
         # ===== Telegram Subscribers =====
-        # Get region subscribers
         telegram_region_subs = get_telegram_subscribers_by_region(region)
         for s in telegram_region_subs:
-            if should_alert(aqi, s["level"]):
+            should_alert_aqi = should_alert(aqi, s["level"])
+            should_alert_benz = benzene_level and should_alert_benzene(benzene_ppb, s["level"])
+            if should_alert_aqi or should_alert_benz:
                 if not is_within_user_hours(s["hours"]):
                     skipped_due_to_hours += 1
-                elif not should_send_telegram_alert(station_id, s["chat_id"]):
+                elif not should_send_telegram_alert(station_id, s["chat_id"], overall_level):
                     skipped_due_to_recent_alert += 1
                 else:
                     telegram_recipients.append(s["chat_id"])
 
-        # Get station-specific subscribers
         telegram_station_subs = get_telegram_subscribers_by_station(station_id)
         for s in telegram_station_subs:
-            if s["chat_id"] not in telegram_recipients:  # Avoid duplicates
-                if should_alert(aqi, s["level"]):
+            if s["chat_id"] not in telegram_recipients:
+                should_alert_aqi = should_alert(aqi, s["level"])
+                should_alert_benz = benzene_level and should_alert_benzene(benzene_ppb, s["level"])
+                if should_alert_aqi or should_alert_benz:
                     if not is_within_user_hours(s["hours"]):
                         skipped_due_to_hours += 1
-                    elif not should_send_telegram_alert(station_id, s["chat_id"]):
+                    elif not should_send_telegram_alert(station_id, s["chat_id"], overall_level):
                         skipped_due_to_recent_alert += 1
                     else:
                         telegram_recipients.append(s["chat_id"])
@@ -1114,21 +1198,19 @@ def main(args: dict) -> dict:
         whatsapp_result = None
         telegram_result = None
 
-        # Only send WhatsApp if enabled
         whatsapp_enabled = os.environ.get("WHATSAPP_ENABLED", "false").lower() == "true"
         if whatsapp_recipients and whatsapp_enabled:
             whatsapp_result = send_twilio_whatsapp(message, whatsapp_recipients)
             total_whatsapp_notifications += len(whatsapp_recipients)
-            # Record alert time for anti-spam
             for phone in whatsapp_recipients:
                 set_last_alert_time(station_id, phone, timestamp)
 
         if telegram_recipients:
             telegram_result = send_telegram_alerts(message, telegram_recipients)
             total_telegram_notifications += len(telegram_recipients)
-            # Record alert time for anti-spam
+            # Record alert with overall level for "worse level" detection
             for chat_id in telegram_recipients:
-                set_telegram_last_alert_time(station_id, chat_id, timestamp)
+                set_telegram_last_alert_info(station_id, chat_id, timestamp, overall_level)
 
         if whatsapp_recipients or telegram_recipients:
             alerts_sent.append({
@@ -1136,55 +1218,15 @@ def main(args: dict) -> dict:
                 "region": region,
                 "aqi": aqi,
                 "level": level,
+                "overall_level": overall_level,
+                "benzene_ppb": benzene_ppb,
+                "benzene_level": benzene_level,
                 "pollutants": reading.get("pollutants", {}),
                 "whatsapp_recipients": len(whatsapp_recipients),
                 "telegram_recipients": len(telegram_recipients),
                 "whatsapp_result": whatsapp_result,
                 "telegram_result": telegram_result,
             })
-
-        # ===== Benzene Alerts (separate from AQI) =====
-        benzene_ppb = reading.get("benzene_ppb", 0)
-        benzene_level = reading.get("benzene_level")
-
-        if benzene_ppb and benzene_level:
-            benzene_telegram_recipients = []
-
-            # Check Telegram subscribers for benzene alerts
-            # Region subscribers
-            for s in telegram_region_subs:
-                if s["chat_id"] not in telegram_recipients:  # Don't double-alert
-                    if should_alert_benzene(benzene_ppb, s["level"]):
-                        if is_within_user_hours(s["hours"]):
-                            if should_send_benzene_alert(station_id, s["chat_id"]):
-                                benzene_telegram_recipients.append(s["chat_id"])
-
-            # Station subscribers
-            for s in telegram_station_subs:
-                if s["chat_id"] not in telegram_recipients and s["chat_id"] not in benzene_telegram_recipients:
-                    if should_alert_benzene(benzene_ppb, s["level"]):
-                        if is_within_user_hours(s["hours"]):
-                            if should_send_benzene_alert(station_id, s["chat_id"]):
-                                benzene_telegram_recipients.append(s["chat_id"])
-
-            if benzene_telegram_recipients:
-                benzene_message = format_benzene_alert_message(reading, language)
-                benzene_result = send_telegram_alerts(benzene_message, benzene_telegram_recipients)
-                total_telegram_notifications += len(benzene_telegram_recipients)
-
-                # Record benzene alert time
-                for chat_id in benzene_telegram_recipients:
-                    set_telegram_last_benzene_alert(station_id, chat_id, timestamp)
-
-                alerts_sent.append({
-                    "station": reading["station"].get("nameEn", reading["station"]["name"]),
-                    "region": region,
-                    "type": "benzene",
-                    "benzene_ppb": benzene_ppb,
-                    "benzene_level": benzene_level,
-                    "telegram_recipients": len(benzene_telegram_recipients),
-                    "telegram_result": benzene_result,
-                })
 
     total_region_subs = sum(len(s) for s in subscribers_by_region.values())
     total_station_subs = sum(len(s) for s in subscribers_by_station.values())
