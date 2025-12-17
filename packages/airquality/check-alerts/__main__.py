@@ -335,10 +335,59 @@ ALERT_LEVELS = {
     "VERY_LOW": -200, # Alert when < -200 (only hazardous)
 }
 
+# Benzene thresholds in ppb (API returns ppb)
+# Conversion: 1 ppb Benzene = 3.19 µg/m³
+# EU annual limit: 5 µg/m³ ≈ 1.57 ppb
+# Israeli ambient standard: ~3.9 µg/m³ ≈ 1.2 ppb
+BENZENE_THRESHOLDS = {
+    "GOOD": 0.3,      # Very sensitive (~1 µg/m³)
+    "MODERATE": 1.2,  # At Israeli standard (~3.8 µg/m³)
+    "LOW": 1.6,       # At EU limit (~5 µg/m³)
+    "VERY_LOW": 2.5,  # Above EU limit (~8 µg/m³)
+}
+
 
 # ============================================================================
 # Air Quality Functions
 # ============================================================================
+
+def transform_pollutant_alias(name: str, alias: str) -> str:
+    """
+    Transform pollutant alias for cleaner display.
+    e.g., "חלקיקים נשימים בגודל 2.5 מיקרון" -> "חלקיקים נשימים PM2.5"
+    """
+    # Map of pollutant names to cleaner Hebrew aliases
+    ALIAS_MAP = {
+        "PM2.5": "חלקיקים נשימים PM2.5",
+        "PM10": "חלקיקים נשימים PM10",
+        "O3": "אוזון O3",
+        "NO2": "חנקן דו-חמצני NO2",
+        "SO2": "גופרית דו-חמצנית SO2",
+        "CO": "פחמן חד-חמצני CO",
+        "NOX": "תחמוצות חנקן NOx",
+        "BENZENE": "בנזן",
+    }
+    return ALIAS_MAP.get(name.upper(), alias)
+
+
+def should_alert_benzene(benzene_ppb: float, threshold: str) -> bool:
+    """Check if Benzene level should trigger an alert based on user's threshold."""
+    threshold_value = BENZENE_THRESHOLDS.get(threshold, BENZENE_THRESHOLDS["MODERATE"])
+    return benzene_ppb >= threshold_value
+
+
+def get_benzene_level(benzene_ppb: float) -> str:
+    """Get the alert level for a Benzene reading."""
+    if benzene_ppb >= BENZENE_THRESHOLDS["VERY_LOW"]:
+        return "VERY_LOW"
+    elif benzene_ppb >= BENZENE_THRESHOLDS["LOW"]:
+        return "LOW"
+    elif benzene_ppb >= BENZENE_THRESHOLDS["MODERATE"]:
+        return "MODERATE"
+    elif benzene_ppb >= BENZENE_THRESHOLDS["GOOD"]:
+        return "GOOD"
+    return None  # No alert needed
+
 
 def get_alert_level(aqi: float) -> str:
     """Get alert level based on Israeli AQI (100=best, negative=worst)."""
@@ -443,6 +492,7 @@ def fetch_readings(stations: list[dict]) -> list[dict]:
 
                 aqi = calculate_aqi(pollutants)
 
+                benzene_ppb = pollutants.get("BENZENE", 0)
                 readings.append({
                     "station": station,
                     "aqi": aqi,
@@ -455,6 +505,8 @@ def fetch_readings(stations: list[dict]) -> list[dict]:
                     "no2": pollutants.get("NO2", 0),
                     "so2": pollutants.get("SO2", 0),
                     "co": pollutants.get("CO", 0),
+                    "benzene_ppb": benzene_ppb,
+                    "benzene_level": get_benzene_level(benzene_ppb) if benzene_ppb else None,
                     "timestamp": timestamp,
                 })
             else:
@@ -546,12 +598,13 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
         rtl = "\u200f"
         pollutant_lines = []
 
-        # Use original Hebrew aliases and units from API
+        # Use transformed Hebrew aliases for cleaner display
         for name in ["PM2.5", "PM10", "O3", "NO2", "SO2", "CO", "BENZENE"]:
             value = pollutants.get(name)
             if value:
                 meta = pollutant_meta.get(name, {})
-                alias = meta.get("alias", name)
+                original_alias = meta.get("alias", name)
+                alias = transform_pollutant_alias(name, original_alias)
                 units = meta.get("units", "")
                 pollutant_lines.append(f"{rtl}• {alias}: {value:.1f} {units}")
 
@@ -609,6 +662,75 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
 
 💡 *Recommendation:*
 {recommendations_en[level]}
+
+🔗 https://air.sviva.gov.il
+""".strip()
+
+
+def format_benzene_alert_message(reading: dict, language: str = "en") -> str:
+    """Format special alert message for high Benzene levels."""
+    benzene_ppb = reading.get("benzene_ppb", 0)
+    benzene_level = reading.get("benzene_level", "MODERATE")
+    station = reading["station"]
+
+    level_emoji = {"GOOD": "🟡", "MODERATE": "🟠", "LOW": "🔴", "VERY_LOW": "🟣"}
+    level_text_he = {"GOOD": "מוגבר", "MODERATE": "גבוה", "LOW": "גבוה מאוד", "VERY_LOW": "מסוכן"}
+
+    # Convert ppb to µg/m³ for display (1 ppb benzene ≈ 3.19 µg/m³)
+    benzene_ugm3 = benzene_ppb * 3.19
+
+    recommendations_he = {
+        "GOOD": "⚠️ רמת בנזן מוגברת. מומלץ לאוורר את הבית.",
+        "MODERATE": "⚠️ רמת בנזן גבוהה. בעלי רגישות מומלצים להימנע משהייה ממושכת בחוץ.",
+        "LOW": "🚨 רמת בנזן גבוהה מאוד! מומלץ להישאר בתוך מבנים.",
+        "VERY_LOW": "🚨 סכנה: רמת בנזן מסוכנת! הימנעו משהייה בחוץ!",
+    }
+
+    emoji = level_emoji.get(benzene_level, "🟠")
+    rtl = "\u200f"
+
+    if language == "he":
+        return f"""
+{emoji} *התראת בנזן*
+
+📍 *תחנה:* {station.get('display_name', station['name'])}
+🗺️ *אזור:* {station.get('regionHe', 'לא ידוע')}
+⚗️ *בנזן:* {benzene_ppb:.2f} ppb ({benzene_ugm3:.1f} µg/m³)
+{rtl}   רמה: {level_text_he[benzene_level]}
+🕐 *זמן:* {reading['timestamp'][:16]}
+
+💡 *המלצה:*
+{recommendations_he[benzene_level]}
+
+ℹ️ הגבול האירופי: 5 µg/m³ (ממוצע שנתי)
+
+🔗 https://air.sviva.gov.il
+
+💬 /help לעזרה
+""".strip()
+
+    # English version
+    level_text_en = {"GOOD": "Elevated", "MODERATE": "High", "LOW": "Very High", "VERY_LOW": "Hazardous"}
+    recommendations_en = {
+        "GOOD": "⚠️ Elevated benzene levels. Consider ventilating your home.",
+        "MODERATE": "⚠️ High benzene levels. Sensitive individuals should limit prolonged outdoor exposure.",
+        "LOW": "🚨 Very high benzene levels! Stay indoors if possible.",
+        "VERY_LOW": "🚨 DANGER: Hazardous benzene levels! Avoid outdoor exposure!",
+    }
+
+    return f"""
+{emoji} *Benzene Alert*
+
+📍 *Station:* {station.get('display_name', station['name'])}
+🗺️ *Region:* {REGION_NAMES.get(station['region'], station['region'])}
+⚗️ *Benzene:* {benzene_ppb:.2f} ppb ({benzene_ugm3:.1f} µg/m³)
+   Level: {level_text_en[benzene_level]}
+🕐 *Time:* {reading['timestamp'][:16]}
+
+💡 *Recommendation:*
+{recommendations_en[benzene_level]}
+
+ℹ️ EU limit: 5 µg/m³ (annual average)
 
 🔗 https://air.sviva.gov.il
 """.strip()
@@ -754,6 +876,37 @@ def set_telegram_last_alert_time(station_id: int, chat_id: str, timestamp: str):
 def should_send_telegram_alert(station_id: int, chat_id: str) -> bool:
     """Check if we should send a Telegram alert (2 hour anti-spam)."""
     last_time = get_telegram_last_alert_time(station_id, chat_id)
+    if not last_time:
+        return True
+
+    try:
+        last_ts = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
+        hours_since = (datetime.now(ISRAEL_TZ) - last_ts).total_seconds() / 3600
+        return hours_since >= 2
+    except:
+        return True
+
+
+# Benzene-specific anti-spam (separate from AQI alerts)
+def get_telegram_last_benzene_alert(station_id: int, chat_id: str) -> Optional[str]:
+    """Get the last time we sent a benzene alert for this station to this Telegram user."""
+    r = get_redis()
+    if not r:
+        return None
+    return r.hget(f"telegram:last_benzene:{chat_id}", str(station_id))
+
+
+def set_telegram_last_benzene_alert(station_id: int, chat_id: str, timestamp: str):
+    """Record when we sent a benzene alert for this station to this Telegram user."""
+    r = get_redis()
+    if r:
+        r.hset(f"telegram:last_benzene:{chat_id}", str(station_id), timestamp)
+        r.expire(f"telegram:last_benzene:{chat_id}", 86400)
+
+
+def should_send_benzene_alert(station_id: int, chat_id: str) -> bool:
+    """Check if we should send a benzene alert (2 hour anti-spam)."""
+    last_time = get_telegram_last_benzene_alert(station_id, chat_id)
     if not last_time:
         return True
 
@@ -958,6 +1111,49 @@ def main(args: dict) -> dict:
                 "whatsapp_result": whatsapp_result,
                 "telegram_result": telegram_result,
             })
+
+        # ===== Benzene Alerts (separate from AQI) =====
+        benzene_ppb = reading.get("benzene_ppb", 0)
+        benzene_level = reading.get("benzene_level")
+
+        if benzene_ppb and benzene_level:
+            benzene_telegram_recipients = []
+
+            # Check Telegram subscribers for benzene alerts
+            # Region subscribers
+            for s in telegram_region_subs:
+                if s["chat_id"] not in telegram_recipients:  # Don't double-alert
+                    if should_alert_benzene(benzene_ppb, s["level"]):
+                        if is_within_user_hours(s["hours"]):
+                            if should_send_benzene_alert(station_id, s["chat_id"]):
+                                benzene_telegram_recipients.append(s["chat_id"])
+
+            # Station subscribers
+            for s in telegram_station_subs:
+                if s["chat_id"] not in telegram_recipients and s["chat_id"] not in benzene_telegram_recipients:
+                    if should_alert_benzene(benzene_ppb, s["level"]):
+                        if is_within_user_hours(s["hours"]):
+                            if should_send_benzene_alert(station_id, s["chat_id"]):
+                                benzene_telegram_recipients.append(s["chat_id"])
+
+            if benzene_telegram_recipients:
+                benzene_message = format_benzene_alert_message(reading, language)
+                benzene_result = send_telegram_alerts(benzene_message, benzene_telegram_recipients)
+                total_telegram_notifications += len(benzene_telegram_recipients)
+
+                # Record benzene alert time
+                for chat_id in benzene_telegram_recipients:
+                    set_telegram_last_benzene_alert(station_id, chat_id, timestamp)
+
+                alerts_sent.append({
+                    "station": reading["station"].get("nameEn", reading["station"]["name"]),
+                    "region": region,
+                    "type": "benzene",
+                    "benzene_ppb": benzene_ppb,
+                    "benzene_level": benzene_level,
+                    "telegram_recipients": len(benzene_telegram_recipients),
+                    "telegram_result": benzene_result,
+                })
 
     total_region_subs = sum(len(s) for s in subscribers_by_region.values())
     total_station_subs = sum(len(s) for s in subscribers_by_station.values())

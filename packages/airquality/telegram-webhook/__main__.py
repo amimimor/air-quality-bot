@@ -699,6 +699,24 @@ def get_aqi_level(aqi: int) -> tuple:
         return "מסוכן", "🟣"
 
 
+def transform_pollutant_alias(name: str, alias: str) -> str:
+    """
+    Transform pollutant alias for cleaner display.
+    e.g., "חלקיקים נשימים בגודל 2.5 מיקרון" -> "חלקיקים נשימים PM2.5"
+    """
+    ALIAS_MAP = {
+        "PM2.5": "חלקיקים נשימים PM2.5",
+        "PM10": "חלקיקים נשימים PM10",
+        "O3": "אוזון O3",
+        "NO2": "חנקן דו-חמצני NO2",
+        "SO2": "גופרית דו-חמצנית SO2",
+        "CO": "פחמן חד-חמצני CO",
+        "NOX": "תחמוצות חנקן NOx",
+        "BENZENE": "בנזן",
+    }
+    return ALIAS_MAP.get(name.upper(), alias)
+
+
 def get_current_readings(user: dict) -> str:
     """Fetch and format current air quality readings for user's locations."""
     stations = user.get("stations", [])
@@ -780,11 +798,12 @@ def get_current_readings(user: dict) -> str:
             lines.append(f"{emoji} *{station_name}*")
             lines.append(f"{rtl}   מדד: {aqi} ({level_name})")
 
-            # Show ALL pollutants with original Hebrew aliases and units
+            # Show ALL pollutants with transformed Hebrew aliases
             for name, value in pollutants.items():
                 if value is not None:
                     meta = pollutant_meta.get(name, {})
-                    alias = meta.get("alias", name)
+                    original_alias = meta.get("alias", name)
+                    alias = transform_pollutant_alias(name, original_alias)
                     units = meta.get("units", "")
                     lines.append(f"{rtl}   {alias}: {value:.1f} {units}")
             lines.append("")
