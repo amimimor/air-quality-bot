@@ -619,19 +619,16 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
             recommendation_level = benzene_level
 
     if language == "he":
-        # Use RTL mark (\u200f) to ensure consistent right-to-left alignment
-        rtl = "\u200f"
         pollutant_lines = []
 
-        # Use transformed Hebrew aliases for cleaner display
-        for name in ["PM2.5", "PM10", "O3", "NO2", "SO2", "CO", "BENZENE"]:
-            value = pollutants.get(name)
-            if value:
+        # Show ALL available pollutants with transformed Hebrew aliases
+        for name, value in pollutants.items():
+            if value is not None:
                 meta = pollutant_meta.get(name, {})
                 original_alias = meta.get("alias", name)
                 alias = transform_pollutant_alias(name, original_alias)
                 units = meta.get("units", "")
-                pollutant_lines.append(f"{rtl}• {alias}: {value:.1f} {units}")
+                pollutant_lines.append(f"• {alias}: {value:.1f} {units}")
 
         pollutants_str = "\n".join(pollutant_lines) if pollutant_lines else "אין נתונים זמינים"
 
