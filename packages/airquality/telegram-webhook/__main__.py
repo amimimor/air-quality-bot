@@ -717,6 +717,29 @@ def transform_pollutant_alias(name: str, alias: str) -> str:
     return ALIAS_MAP.get(name.upper(), alias)
 
 
+# Benzene thresholds in ppb (aligned with check-alerts)
+# Conversion: 1 ppb Benzene = 3.19 µg/m³
+BENZENE_THRESHOLDS = {
+    "GOOD": 0.3,      # ~1 µg/m³
+    "MODERATE": 1.2,  # ~3.8 µg/m³ (Israeli standard)
+    "LOW": 1.6,       # ~5 µg/m³ (EU limit)
+    "VERY_LOW": 2.5,  # ~8 µg/m³
+}
+
+
+def get_benzene_level(benzene_ppb: float) -> tuple:
+    """Get benzene level name and emoji."""
+    if benzene_ppb >= BENZENE_THRESHOLDS["VERY_LOW"]:
+        return "מסוכן", "🟣"
+    elif benzene_ppb >= BENZENE_THRESHOLDS["LOW"]:
+        return "גבוה מאוד", "🔴"
+    elif benzene_ppb >= BENZENE_THRESHOLDS["MODERATE"]:
+        return "גבוה", "🟠"
+    elif benzene_ppb >= BENZENE_THRESHOLDS["GOOD"]:
+        return "מוגבר", "🟡"
+    return None, None
+
+
 def get_current_readings(user: dict) -> str:
     """Fetch and format current air quality readings for user's locations."""
     stations = user.get("stations", [])
@@ -796,16 +819,24 @@ def get_current_readings(user: dict) -> str:
             # Use RTL mark for consistent alignment
             rtl = "\u200f"
             lines.append(f"{emoji} *{station_name}*")
-            lines.append(f"{rtl}   מדד: {aqi} ({level_name})")
+            lines.append(f"{rtl}   📊 מדד: {aqi} ({level_name})")
+
+            # Check for elevated benzene (not included in AQI)
+            benzene_ppb = pollutants.get("BENZENE", 0)
+            if benzene_ppb:
+                benzene_level_name, benzene_emoji = get_benzene_level(benzene_ppb)
+                if benzene_level_name:
+                    lines.append(f"{rtl}   ⚗️ בנזן: {benzene_level_name} {benzene_emoji}")
 
             # Show ALL pollutants with transformed Hebrew aliases
+            lines.append(f"{rtl}   *מזהמים:*")
             for name, value in pollutants.items():
                 if value is not None:
                     meta = pollutant_meta.get(name, {})
                     original_alias = meta.get("alias", name)
                     alias = transform_pollutant_alias(name, original_alias)
                     units = meta.get("units", "")
-                    lines.append(f"{rtl}   {alias}: {value:.1f} {units}")
+                    lines.append(f"{rtl}   • {alias}: {value:.1f} {units}")
             lines.append("")
 
         except Exception as e:
