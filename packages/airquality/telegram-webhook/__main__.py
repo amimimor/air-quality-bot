@@ -780,10 +780,9 @@ def get_current_readings(user: dict) -> str:
             lines.append(f"{emoji} *{station_name}*")
             lines.append(f"{rtl}   מדד: {aqi} ({level_name})")
 
-            # Show pollutants with original Hebrew aliases and units
-            for name in ["PM2.5", "PM10", "BENZENE"]:
-                value = pollutants.get(name)
-                if value:
+            # Show ALL pollutants with original Hebrew aliases and units
+            for name, value in pollutants.items():
+                if value is not None:
                     meta = pollutant_meta.get(name, {})
                     alias = meta.get("alias", name)
                     units = meta.get("units", "")
