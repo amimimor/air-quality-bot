@@ -636,8 +636,9 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
 
         # Show benzene line if elevated
         benzene_line = ""
+        benzene_level_names = {"GOOD": "מוגבר", "MODERATE": "גבוה", "LOW": "גבוה מאוד", "VERY_LOW": "מסוכן"}
         if benzene_level:
-            benzene_line = f"\n⚗️ *בנזן:* {benzene_level_text_he[benzene_level]}"
+            benzene_line = f"\n⚗️ *בנזן:* {benzene_level_names.get(benzene_level, benzene_level)}"
 
         return f"""
 {emoji} *התראת איכות אוויר*
