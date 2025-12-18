@@ -697,40 +697,83 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
 """.strip()
 
 
-def format_all_clear_message(reading: dict, language: str = "en") -> str:
-    """Format 'all clear' message when air quality improves."""
+def format_improved_message(reading: dict, current_level: str, language: str = "en") -> str:
+    """Format 'improved' message when air quality gets better."""
     station = reading["station"]
     aqi = reading["aqi"]
 
+    # Level-specific messaging
+    level_info_he = {
+        "GOOD": {
+            "emoji": "✅",
+            "title": "הכל בסדר - איכות האוויר השתפרה",
+            "quality": "טוב",
+            "message": "💚 איכות האוויר חזרה לרמה תקינה.\nניתן לחזור לפעילות רגילה בחוץ."
+        },
+        "MODERATE": {
+            "emoji": "🟡",
+            "title": "איכות האוויר השתפרה",
+            "quality": "בינוני",
+            "message": "⚠️ איכות האוויר השתפרה אך עדיין בינונית.\nבעלי רגישות מומלצים להמשיך לעקוב."
+        },
+        "LOW": {
+            "emoji": "🟠",
+            "title": "איכות האוויר השתפרה מעט",
+            "quality": "לא בריא",
+            "message": "⚠️ איכות האוויר השתפרה אך עדיין לא בריאה.\nמומלץ להמשיך להגביל פעילות בחוץ."
+        },
+    }
+
+    level_info_en = {
+        "GOOD": {
+            "emoji": "✅",
+            "title": "All Clear - Air Quality Improved",
+            "quality": "Good",
+            "message": "💚 Air quality has returned to normal levels.\nSafe to resume outdoor activities."
+        },
+        "MODERATE": {
+            "emoji": "🟡",
+            "title": "Air Quality Improved",
+            "quality": "Moderate",
+            "message": "⚠️ Air quality improved but still moderate.\nSensitive individuals should continue monitoring."
+        },
+        "LOW": {
+            "emoji": "🟠",
+            "title": "Air Quality Slightly Improved",
+            "quality": "Unhealthy",
+            "message": "⚠️ Air quality improved but still unhealthy.\nContinue to limit outdoor activities."
+        },
+    }
+
     if language == "he":
+        info = level_info_he.get(current_level, level_info_he["MODERATE"])
         return f"""
-✅ *הכל בסדר - איכות האוויר השתפרה*
+{info['emoji']} *{info['title']}*
 
 📍 *תחנה:* {station.get('display_name', station['name'])}
 🗺️ *אזור:* {station.get('regionHe', 'לא ידוע')}
-📊 *איכות:* טוב
+📊 *איכות:* {info['quality']}
 🌬️ *מדד AQI:* {aqi}
 🕐 *זמן:* {reading['timestamp'][:16]}
 
-💚 איכות האוויר חזרה לרמה תקינה.
-ניתן לחזור לפעילות רגילה בחוץ.
+{info['message']}
 
 🔗 https://air.sviva.gov.il
 
 💬 /help לעזרה
 """.strip()
 
+    info = level_info_en.get(current_level, level_info_en["MODERATE"])
     return f"""
-✅ *All Clear - Air Quality Improved*
+{info['emoji']} *{info['title']}*
 
 📍 *Station:* {station.get('display_name', station['name'])}
 🗺️ *Region:* {REGION_NAMES.get(station['region'], station['region'])}
-📊 *Quality:* Good
+📊 *Quality:* {info['quality']}
 🌬️ *AQI:* {aqi}
 🕐 *Time:* {reading['timestamp'][:16]}
 
-💚 Air quality has returned to normal levels.
-Safe to resume outdoor activities.
+{info['message']}
 
 🔗 https://air.sviva.gov.il
 """.strip()
@@ -1291,55 +1334,64 @@ def main(args: dict) -> dict:
                 "telegram_result": telegram_result,
             })
 
-        # ===== "All Clear" Notifications =====
-        # Send if quality improved to GOOD and user was previously alerted
-        if overall_level == "GOOD":
-            all_clear_recipients = []
-            all_subs = telegram_region_subs + telegram_station_subs
-            seen_chat_ids = set()
+        # ===== "Improved" Notifications =====
+        # Send if quality improved from previous alert level
+        # Level severity for comparison
+        level_severity_map = {"GOOD": 0, "MODERATE": 1, "LOW": 2, "VERY_LOW": 3}
+        current_severity = level_severity_map.get(overall_level, 0)
 
-            for s in all_subs:
-                chat_id = s["chat_id"]
-                if chat_id in seen_chat_ids:
-                    continue
-                seen_chat_ids.add(chat_id)
+        improved_recipients = []
+        all_subs = telegram_region_subs + telegram_station_subs
+        seen_chat_ids = set()
 
-                # Check if user was previously alerted for this station
-                last_time, last_level = get_telegram_last_alert_info(station_id, chat_id)
-                if not last_time or not last_level:
-                    continue
+        for s in all_subs:
+            chat_id = s["chat_id"]
+            if chat_id in seen_chat_ids:
+                continue
+            seen_chat_ids.add(chat_id)
 
-                # Only send "all clear" if previous level was bad (not GOOD)
-                if last_level == "GOOD":
-                    continue
+            # Check if user was previously alerted for this station
+            last_time, last_level = get_telegram_last_alert_info(station_id, chat_id)
+            if not last_time or not last_level:
+                continue
 
-                # Check if we already sent "all clear" after this alert
-                if get_telegram_all_clear_sent(station_id, chat_id):
-                    continue
+            last_severity = level_severity_map.get(last_level, 0)
 
-                # Check user's hour preferences
-                if not is_within_user_hours(s["hours"]):
-                    continue
+            # Only notify if quality IMPROVED (current is better than last)
+            if current_severity >= last_severity:
+                continue
 
-                all_clear_recipients.append(chat_id)
+            # Check if we already sent "improved" notification after this alert
+            if get_telegram_all_clear_sent(station_id, chat_id):
+                continue
 
-            if all_clear_recipients:
-                all_clear_message = format_all_clear_message(reading, language)
-                all_clear_result = send_telegram_alerts(all_clear_message, all_clear_recipients)
-                total_telegram_notifications += len(all_clear_recipients)
+            # Check user's hour preferences
+            if not is_within_user_hours(s["hours"]):
+                continue
 
-                # Mark "all clear" as sent
-                for chat_id in all_clear_recipients:
-                    set_telegram_all_clear_sent(station_id, chat_id, timestamp)
+            improved_recipients.append(chat_id)
 
-                alerts_sent.append({
-                    "station": reading["station"].get("nameEn", reading["station"]["name"]),
-                    "region": region,
-                    "type": "all_clear",
-                    "aqi": aqi,
-                    "telegram_recipients": len(all_clear_recipients),
-                    "telegram_result": all_clear_result,
-                })
+        if improved_recipients:
+            improved_message = format_improved_message(reading, overall_level, language)
+            improved_result = send_telegram_alerts(improved_message, improved_recipients)
+            total_telegram_notifications += len(improved_recipients)
+
+            # Mark "improved" as sent and update the last alert level
+            for chat_id in improved_recipients:
+                set_telegram_all_clear_sent(station_id, chat_id, timestamp)
+                # Update last alert level so we can track further improvements
+                set_telegram_last_alert_info(station_id, chat_id, timestamp, overall_level)
+
+            alerts_sent.append({
+                "station": reading["station"].get("nameEn", reading["station"]["name"]),
+                "region": region,
+                "type": "improved",
+                "from_level": last_level,
+                "to_level": overall_level,
+                "aqi": aqi,
+                "telegram_recipients": len(improved_recipients),
+                "telegram_result": improved_result,
+            })
 
     total_region_subs = sum(len(s) for s in subscribers_by_region.values())
     total_station_subs = sum(len(s) for s in subscribers_by_station.values())
