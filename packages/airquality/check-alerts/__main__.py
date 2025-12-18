@@ -259,13 +259,16 @@ def get_all_stations() -> list[dict]:
                 region_id = s.get("regionId", 0)
                 region = REGION_ID_MAP.get(region_id, "other")
                 region_he = REGION_HE_MAP.get(region, "אחר")
-                city = s.get("city") or ""
+                raw_city = s.get("city")
                 station_name = s["name"]
 
                 # Build display name: "Station, City" if city available
-                if city and city != station_name:
+                # Handle None, empty string, or literal "None" string from API
+                if raw_city and raw_city != "None" and raw_city != station_name:
+                    city = raw_city
                     display_name = f"{station_name}, {city}"
                 else:
+                    city = ""
                     display_name = station_name
 
                 stations.append({

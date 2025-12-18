@@ -99,11 +99,14 @@ def get_stations_by_region() -> dict:
                     continue
                 region_id = s.get("regionId", 0)
                 region = REGION_ID_MAP.get(region_id, "other")
-                city = s.get("city") or s["name"]
+                raw_city = s.get("city")
                 station_name = s["name"]
-                if city and city != station_name:
+                # Handle None, empty string, or literal "None" string from API
+                if raw_city and raw_city != "None" and raw_city != station_name:
+                    city = raw_city
                     display_name = f"{city} ({station_name})"
                 else:
+                    city = station_name
                     display_name = station_name
                 station = {
                     "id": s["stationId"],
