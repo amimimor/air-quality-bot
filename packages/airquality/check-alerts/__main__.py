@@ -697,6 +697,45 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
 """.strip()
 
 
+def format_all_clear_message(reading: dict, language: str = "en") -> str:
+    """Format 'all clear' message when air quality improves."""
+    station = reading["station"]
+    aqi = reading["aqi"]
+
+    if language == "he":
+        return f"""
+✅ *הכל בסדר - איכות האוויר השתפרה*
+
+📍 *תחנה:* {station.get('display_name', station['name'])}
+🗺️ *אזור:* {station.get('regionHe', 'לא ידוע')}
+📊 *איכות:* טוב
+🌬️ *מדד AQI:* {aqi}
+🕐 *זמן:* {reading['timestamp'][:16]}
+
+💚 איכות האוויר חזרה לרמה תקינה.
+ניתן לחזור לפעילות רגילה בחוץ.
+
+🔗 https://air.sviva.gov.il
+
+💬 /help לעזרה
+""".strip()
+
+    return f"""
+✅ *All Clear - Air Quality Improved*
+
+📍 *Station:* {station.get('display_name', station['name'])}
+🗺️ *Region:* {REGION_NAMES.get(station['region'], station['region'])}
+📊 *Quality:* Good
+🌬️ *AQI:* {aqi}
+🕐 *Time:* {reading['timestamp'][:16]}
+
+💚 Air quality has returned to normal levels.
+Safe to resume outdoor activities.
+
+🔗 https://air.sviva.gov.il
+""".strip()
+
+
 def format_benzene_alert_message(reading: dict, language: str = "en") -> str:
     """Format special alert message for high Benzene levels."""
     benzene_ppb = reading.get("benzene_ppb", 0)
@@ -924,6 +963,29 @@ def set_telegram_last_alert_info(station_id: int, chat_id: str, timestamp: str, 
     if r:
         r.hset(f"telegram:last_alert:{chat_id}", str(station_id), f"{timestamp}|{overall_level}")
         r.expire(f"telegram:last_alert:{chat_id}", 86400)
+
+
+def get_telegram_all_clear_sent(station_id: int, chat_id: str) -> bool:
+    """Check if we already sent an 'all clear' for this station after the last alert."""
+    r = get_redis()
+    if not r:
+        return False
+    return r.hget(f"telegram:all_clear:{chat_id}", str(station_id)) is not None
+
+
+def set_telegram_all_clear_sent(station_id: int, chat_id: str, timestamp: str):
+    """Record that we sent an 'all clear' notification."""
+    r = get_redis()
+    if r:
+        r.hset(f"telegram:all_clear:{chat_id}", str(station_id), timestamp)
+        r.expire(f"telegram:all_clear:{chat_id}", 86400)
+
+
+def clear_telegram_all_clear(station_id: int, chat_id: str):
+    """Clear the 'all clear' flag when a new alert is sent."""
+    r = get_redis()
+    if r:
+        r.hdel(f"telegram:all_clear:{chat_id}", str(station_id))
 
 
 def should_send_telegram_alert(station_id: int, chat_id: str, current_overall_level: str) -> bool:
@@ -1208,8 +1270,10 @@ def main(args: dict) -> dict:
             telegram_result = send_telegram_alerts(message, telegram_recipients)
             total_telegram_notifications += len(telegram_recipients)
             # Record alert with overall level for "worse level" detection
+            # Also clear "all clear" flag so we can send it when quality improves
             for chat_id in telegram_recipients:
                 set_telegram_last_alert_info(station_id, chat_id, timestamp, overall_level)
+                clear_telegram_all_clear(station_id, chat_id)
 
         if whatsapp_recipients or telegram_recipients:
             alerts_sent.append({
@@ -1226,6 +1290,56 @@ def main(args: dict) -> dict:
                 "whatsapp_result": whatsapp_result,
                 "telegram_result": telegram_result,
             })
+
+        # ===== "All Clear" Notifications =====
+        # Send if quality improved to GOOD and user was previously alerted
+        if overall_level == "GOOD":
+            all_clear_recipients = []
+            all_subs = telegram_region_subs + telegram_station_subs
+            seen_chat_ids = set()
+
+            for s in all_subs:
+                chat_id = s["chat_id"]
+                if chat_id in seen_chat_ids:
+                    continue
+                seen_chat_ids.add(chat_id)
+
+                # Check if user was previously alerted for this station
+                last_time, last_level = get_telegram_last_alert_info(station_id, chat_id)
+                if not last_time or not last_level:
+                    continue
+
+                # Only send "all clear" if previous level was bad (not GOOD)
+                if last_level == "GOOD":
+                    continue
+
+                # Check if we already sent "all clear" after this alert
+                if get_telegram_all_clear_sent(station_id, chat_id):
+                    continue
+
+                # Check user's hour preferences
+                if not is_within_user_hours(s["hours"]):
+                    continue
+
+                all_clear_recipients.append(chat_id)
+
+            if all_clear_recipients:
+                all_clear_message = format_all_clear_message(reading, language)
+                all_clear_result = send_telegram_alerts(all_clear_message, all_clear_recipients)
+                total_telegram_notifications += len(all_clear_recipients)
+
+                # Mark "all clear" as sent
+                for chat_id in all_clear_recipients:
+                    set_telegram_all_clear_sent(station_id, chat_id, timestamp)
+
+                alerts_sent.append({
+                    "station": reading["station"].get("nameEn", reading["station"]["name"]),
+                    "region": region,
+                    "type": "all_clear",
+                    "aqi": aqi,
+                    "telegram_recipients": len(all_clear_recipients),
+                    "telegram_result": all_clear_result,
+                })
 
     total_region_subs = sum(len(s) for s in subscribers_by_region.values())
     total_station_subs = sum(len(s) for s in subscribers_by_station.values())
