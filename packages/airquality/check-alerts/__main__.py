@@ -561,6 +561,7 @@ def _fetch_single_station(station: dict, api_token: str) -> Optional[dict]:
             "benzene_ppb": benzene_ppb,
             "benzene_level": get_benzene_level(benzene_ppb) if benzene_ppb else None,
             "timestamp": timestamp,
+            "fetched_at": datetime.now(ISRAEL_TZ).isoformat(),
         }
 
         # Cache the reading
@@ -668,6 +669,7 @@ def _fetch_single_station_with_client(station: dict, api_token: str, client: htt
             "benzene_ppb": benzene_ppb,
             "benzene_level": get_benzene_level(benzene_ppb) if benzene_ppb else None,
             "timestamp": timestamp,
+            "fetched_at": datetime.now(ISRAEL_TZ).isoformat(),
         }
 
         cache_data = {k: v for k, v in reading.items() if k != "station"}
@@ -1300,6 +1302,10 @@ def main(args: dict) -> dict:
     language = args.get("language") or os.environ.get("LANGUAGE", "he")
     current_time_window = get_current_time_window()
 
+    # Batch processing: split stations across multiple cron invocations
+    batch = int(args.get("batch", 0))
+    total_batches = int(args.get("total_batches", 1))
+
     # Get all WhatsApp subscribers from Redis (grouped by region AND station)
     subscribers_by_region = get_all_subscribers()
     subscribers_by_station = get_station_subscribers()
@@ -1321,6 +1327,8 @@ def main(args: dict) -> dict:
             "body": {
                 "timestamp": datetime.now(ISRAEL_TZ).isoformat(),
                 "current_time_window": current_time_window,
+                "batch": batch,
+                "total_batches": total_batches,
                 "message": "No subscribers registered",
                 "stations_checked": 0,
                 "alerts_sent": [],
@@ -1330,28 +1338,30 @@ def main(args: dict) -> dict:
     # Fetch all stations from API (cached)
     all_stations = get_all_stations()
 
-    # Build stations to check - prioritize directly subscribed stations
-    # For region subscribers, use a smaller sample to avoid timeout
-    stations_to_check = []
+    # Build list of ALL stations to check (directly subscribed + regional)
+    stations_to_check_all = []
     seen_station_ids = set()
 
-    # First: Add specific stations that users directly subscribed to (high priority)
+    # First: Add specific stations that users directly subscribed to
     for s in all_stations:
         if s["id"] in all_active_station_ids:
-            stations_to_check.append(s)
+            stations_to_check_all.append(s)
             seen_station_ids.add(s["id"])
 
-    # Second: Add LIMITED stations from active regions (for region subscribers)
-    # Max 3 stations per region to avoid timeout
-    MAX_STATIONS_PER_REGION = 3
-    region_station_counts = {}
+    # Second: Add all stations from active regions
     for s in all_stations:
         if s["region"] in all_active_regions and s["id"] not in seen_station_ids:
-            count = region_station_counts.get(s["region"], 0)
-            if count < MAX_STATIONS_PER_REGION:
-                stations_to_check.append(s)
-                seen_station_ids.add(s["id"])
-                region_station_counts[s["region"]] = count + 1
+            stations_to_check_all.append(s)
+            seen_station_ids.add(s["id"])
+
+    # Sort by station ID for consistent batch assignment across runs
+    stations_to_check_all.sort(key=lambda s: s["id"])
+
+    # Filter to only this batch's stations
+    stations_to_check = [
+        s for i, s in enumerate(stations_to_check_all)
+        if i % total_batches == batch
+    ]
 
     # Fetch readings
     readings = fetch_readings(stations_to_check)
@@ -1552,6 +1562,10 @@ def main(args: dict) -> dict:
         "body": {
             "timestamp": datetime.now(ISRAEL_TZ).isoformat(),
             "current_time_window": current_time_window,
+            "batch": batch,
+            "total_batches": total_batches,
+            "stations_in_batch": len(stations_to_check),
+            "total_stations_to_check": len(stations_to_check_all),
             "active_regions": all_active_regions,
             "active_stations": all_active_station_ids,
             "whatsapp_subscribers": total_region_subs + total_station_subs,

@@ -8,6 +8,7 @@ through a conversational Hebrew interface.
 import json
 import os
 import ssl
+from datetime import datetime
 from typing import Optional, List
 import httpx
 import redis
@@ -274,21 +275,22 @@ THRESHOLDS_MESSAGE = """📊 <b>מדדי התראה</b>
 
 <b>🌬️ מדד AQI (ישראלי)</b>
 <code>100 = מצוין, 0 = גרוע</code>
-• טוב: &gt;50
-• בינוני: 0-50
-• לא בריא: 0 עד -100
-• מסוכן: &lt;-100
+• 🟢 טוב: &gt;50
+• 🟡 בינוני: 0-50
+• 🟠 לא בריא לרגישים: 0 עד -100
+• 🔴 לא בריא: -100 עד -200
+• 🟣 מסוכן: &lt;-200
 
 <b>⚗️ בנזן (ppb)</b>
 <code>אין סף בטוח - מסרטן</code>
-• מוגבר: ≥0.3 (~1 µg/m³)
-• גבוה: ≥1.2 (תקן ישראלי)
-• גבוה מאוד: ≥1.6 (גבול EU)
-• מסוכן: ≥2.5
+• 🟡 מוגבר: ≥1.0 ppb
+• 🟠 גבוה: ≥1.55 ppb
+• 🔴 גבוה מאוד: ≥2.1 ppb
+• 🟣 מסוכן: ≥2.64 ppb
 
-<b>⚠️ המלצות לפי רמה</b>
-• מוגבר → הגבילו פעילות בחוץ
-• גבוה+ → הישארו בפנים
+<b>⚠️ המלצות</b>
+• מוגבר/בינוני → הגבילו פעילות בחוץ
+• גבוה+ / לא בריא → הישארו בפנים
 
 🔗 https://air.sviva.gov.il"""
 
@@ -867,14 +869,16 @@ def get_current_readings(user: dict) -> str:
 
     for station_id in station_ids[:5]:  # Limit to 5 stations
         try:
-            # Check cache first
+            # Check cache first (populated by check-alerts cron)
             cached = get_cached_reading(station_id)
             if cached:
                 pollutants = cached.get("pollutants", {})
                 pollutant_meta = cached.get("pollutant_meta", {})
                 aqi = cached.get("aqi", 50)
+                # Use fetched_at if available, fallback to timestamp (measurement time)
+                fetched_at = cached.get("fetched_at") or cached.get("timestamp")
             else:
-                # Fetch from API
+                # Cache miss - fetch from API
                 response = httpx.get(
                     f"{AIR_API_URL}/stations/{station_id}/data/latest",
                     headers={"Authorization": f"ApiToken {api_token}"},
@@ -886,6 +890,9 @@ def get_current_readings(user: dict) -> str:
                 data = response.json().get("data", [])
                 if not data:
                     continue
+
+                # Record when we fetched this data
+                fetched_at = datetime.now().astimezone().isoformat()
 
                 channels = data[0].get("channels", [])
                 pollutants = {}
@@ -904,11 +911,12 @@ def get_current_readings(user: dict) -> str:
 
                 aqi = calculate_aqi(pollutants)
 
-                # Cache the reading
+                # Cache the reading with fetch time
                 set_cached_reading(station_id, {
                     "pollutants": pollutants,
                     "pollutant_meta": pollutant_meta,
                     "aqi": aqi,
+                    "fetched_at": fetched_at,
                 })
             level_name, emoji = get_aqi_level(aqi)
 
@@ -960,6 +968,16 @@ def get_current_readings(user: dict) -> str:
                     alias = transform_pollutant_alias(name, original_alias)
                     units = meta.get("units", "")
                     lines.append(f"• {alias}: {value:.1f} {units}")
+
+            # Show when data was fetched
+            if fetched_at:
+                try:
+                    # Parse ISO timestamp (e.g., "2025-12-25T21:20:00+02:00")
+                    dt = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+                    time_str = dt.strftime("%H:%M")
+                    lines.append(f"🕐 עודכן ב-{time_str}")
+                except:
+                    pass
             lines.append("")
 
         except Exception as e:

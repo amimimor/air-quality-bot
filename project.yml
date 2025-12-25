@@ -23,13 +23,22 @@ packages:
           timeout: 30000
 
       # Alert checker - runs on schedule, fetches air quality and sends alerts
+      # Split into 2 batches (~48 stations each) - DO Functions limit: 2 triggers per function
       - name: check-alerts
         runtime: python:3.11
         web: true
         limits:
-          timeout: 60000
+          timeout: 120000
         triggers:
-          - name: every-30-min
+          # Batch 0: runs at :00, :10, :20, :30, :40, :50
+          - name: batch-0
             sourceType: scheduler
             sourceDetails:
-              cron: "*/10 * * * *"
+              cron: "0,10,20,30,40,50 * * * *"
+              body: '{"batch": 0, "total_batches": 2}'
+          # Batch 1: runs at :05, :15, :25, :35, :45, :55
+          - name: batch-1
+            sourceType: scheduler
+            sourceDetails:
+              cron: "5,15,25,35,45,55 * * * *"
+              body: '{"batch": 1, "total_batches": 2}'
