@@ -339,13 +339,13 @@ ALERT_LEVELS = {
 }
 
 # Benzene thresholds in ppb (API returns ppb)
-# Conversion: 1 ppb Benzene = 3.19 µg/m³
-# EU annual limit: 5 µg/m³ ≈ 1.57 ppb
-# Israeli ambient standard: ~3.9 µg/m³ ≈ 1.2 ppb
+# Conversion: 1 ppb Benzene ≈ 3.19 µg/m³
+# EU annual limit: 5 µg/m³ ≈ 1.6 ppb
+# WHO: No safe threshold - benzene is a known carcinogen
 BENZENE_THRESHOLDS = {
-    "GOOD": 0.3,      # Very sensitive (~1 µg/m³)
-    "MODERATE": 1.2,  # At Israeli standard (~3.8 µg/m³)
-    "LOW": 1.6,       # At EU limit (~5 µg/m³)
+    "GOOD": 0.3,      # Detectable elevation (~1 µg/m³)
+    "MODERATE": 1.2,  # Israeli standard (~3.8 µg/m³)
+    "LOW": 1.6,       # EU annual limit (~5 µg/m³)
     "VERY_LOW": 2.5,  # Above EU limit (~8 µg/m³)
 }
 
@@ -430,14 +430,15 @@ def calculate_aqi(pollutants: dict) -> int:
     Breakpoints from Israeli Ministry of Environmental Protection.
     """
     # Israeli breakpoints: (conc_low, conc_high, idx_low, idx_high)
+    # NOTE: Ranges made continuous to avoid gaps (e.g., 37.2 falling between 37 and 37.5)
     BREAKPOINTS = {
-        "PM2.5": [(0, 18.5, 0, 49), (18.6, 37, 50, 100), (37.5, 84, 101, 200), (84.5, 130, 201, 300), (130.5, 165, 301, 400), (165.5, 200, 401, 500)],
-        "PM10": [(0, 65, 0, 49), (66, 129, 50, 100), (130, 215, 101, 200), (216, 300, 201, 300), (301, 355, 301, 400), (356, 430, 401, 500)],
-        "O3": [(0, 35, 0, 49), (36, 70, 50, 100), (71, 97, 101, 200), (98, 117, 201, 300), (118, 155, 301, 400), (156, 188, 401, 500)],
-        "NO2": [(0, 53, 0, 49), (54, 105, 50, 100), (106, 160, 101, 200), (161, 213, 201, 300), (214, 260, 301, 400), (261, 316, 401, 500)],
-        "SO2": [(0, 67, 0, 49), (68, 133, 50, 100), (134, 163, 101, 200), (164, 191, 201, 300), (192, 253, 301, 400), (254, 303, 401, 500)],
-        "CO": [(0, 26, 0, 49), (27, 51, 50, 100), (52, 78, 101, 200), (79, 104, 201, 300), (105, 130, 301, 400), (131, 156, 401, 500)],
-        "NOX": [(0, 250, 0, 49), (251, 499, 50, 100), (500, 750, 101, 200), (751, 1000, 201, 300), (1001, 1200, 301, 400), (1201, 1400, 401, 500)],
+        "PM2.5": [(0, 18.5, 0, 49), (18.5, 37.5, 50, 100), (37.5, 84.5, 101, 200), (84.5, 130.5, 201, 300), (130.5, 165.5, 301, 400), (165.5, 200, 401, 500)],
+        "PM10": [(0, 65, 0, 49), (65, 130, 50, 100), (130, 216, 101, 200), (216, 301, 201, 300), (301, 356, 301, 400), (356, 430, 401, 500)],
+        "O3": [(0, 35, 0, 49), (35, 71, 50, 100), (71, 98, 101, 200), (98, 118, 201, 300), (118, 156, 301, 400), (156, 188, 401, 500)],
+        "NO2": [(0, 53, 0, 49), (53, 106, 50, 100), (106, 161, 101, 200), (161, 214, 201, 300), (214, 261, 301, 400), (261, 316, 401, 500)],
+        "SO2": [(0, 67, 0, 49), (67, 134, 50, 100), (134, 164, 101, 200), (164, 192, 201, 300), (192, 254, 301, 400), (254, 303, 401, 500)],
+        "CO": [(0, 26, 0, 49), (26, 52, 50, 100), (52, 79, 101, 200), (79, 105, 201, 300), (105, 131, 301, 400), (131, 156, 401, 500)],
+        "NOX": [(0, 250, 0, 49), (250, 500, 50, 100), (500, 751, 101, 200), (751, 1001, 201, 300), (1001, 1201, 301, 400), (1201, 1400, 401, 500)],
     }
 
     sub_indices = []
@@ -619,9 +620,10 @@ def format_alert_message(reading: dict, language: str = "en") -> str:
     if benzene_level and benzene_severity.get(benzene_level, 0) > aqi_severity.get(level, 0):
         overall_level_he = benzene_to_quality_he[benzene_level]
         overall_level = benzene_level  # Keep for comparison
-        # Use more severe recommendations when benzene is high
-        if benzene_level in ["LOW", "VERY_LOW"]:
-            recommendation_level = benzene_level
+        # Use benzene-appropriate recommendations when benzene is elevated
+        # Map benzene levels to recommendation levels
+        benzene_to_recommendation = {"GOOD": "MODERATE", "MODERATE": "LOW", "LOW": "LOW", "VERY_LOW": "VERY_LOW"}
+        recommendation_level = benzene_to_recommendation.get(benzene_level, recommendation_level)
 
     if language == "he":
         pollutant_lines = []
@@ -705,6 +707,8 @@ def format_improved_message(reading: dict, current_level: str, language: str = "
     """Format 'improved' message when air quality gets better."""
     station = reading["station"]
     aqi = reading["aqi"]
+    benzene_ppb = reading.get("benzene_ppb", 0)
+    benzene_level = reading.get("benzene_level")
 
     # Level-specific messaging
     level_info_he = {
@@ -749,6 +753,14 @@ def format_improved_message(reading: dict, current_level: str, language: str = "
         },
     }
 
+    # Build benzene line if present
+    benzene_level_names = {"GOOD": "מוגבר", "MODERATE": "גבוה", "LOW": "גבוה מאוד", "VERY_LOW": "מסוכן"}
+    benzene_line_he = ""
+    benzene_line_en = ""
+    if benzene_ppb and benzene_level:
+        benzene_line_he = f"\n⚗️ *בנזן:* {benzene_ppb:.2f} ppb ({benzene_level_names.get(benzene_level, benzene_level)})"
+        benzene_line_en = f"\n⚗️ *Benzene:* {benzene_ppb:.2f} ppb"
+
     if language == "he":
         info = level_info_he.get(current_level, level_info_he["MODERATE"])
         return f"""
@@ -757,7 +769,7 @@ def format_improved_message(reading: dict, current_level: str, language: str = "
 📍 *תחנה:* {station.get('display_name', station['name'])}
 🗺️ *אזור:* {station.get('regionHe', 'לא ידוע')}
 📊 *איכות:* {info['quality']}
-🌬️ *מדד AQI:* {aqi}
+🌬️ *מדד AQI:* {aqi}{benzene_line_he}
 🕐 *זמן:* {reading['timestamp'][:16]}
 
 {info['message']}
@@ -774,7 +786,7 @@ def format_improved_message(reading: dict, current_level: str, language: str = "
 📍 *Station:* {station.get('display_name', station['name'])}
 🗺️ *Region:* {REGION_NAMES.get(station['region'], station['region'])}
 📊 *Quality:* {info['quality']}
-🌬️ *AQI:* {aqi}
+🌬️ *AQI:* {aqi}{benzene_line_en}
 🕐 *Time:* {reading['timestamp'][:16]}
 
 {info['message']}
@@ -1047,13 +1059,12 @@ def should_send_telegram_alert(station_id: int, chat_id: str, current_overall_le
         return True
 
     # Level severity: higher = worse
-    # Map both AQI levels and Benzene levels to unified severity
+    # These are the English level names we store in Redis
     level_severity = {
-        "GOOD": 0, "טוב": 0,
-        "מוגבר": 1,  # Benzene elevated
-        "MODERATE": 2, "בינוני": 2, "גבוה": 2,
-        "LOW": 3, "לא בריא": 3, "גבוה מאוד": 3,
-        "VERY_LOW": 4, "מסוכן": 4,
+        "GOOD": 0,
+        "MODERATE": 1,
+        "LOW": 2,
+        "VERY_LOW": 3,
     }
     current_severity = level_severity.get(current_overall_level, 0)
     last_severity = level_severity.get(last_level, 0)
@@ -1380,11 +1391,21 @@ def main(args: dict) -> dict:
             improved_result = send_telegram_alerts(improved_message, improved_recipients)
             total_telegram_notifications += len(improved_recipients)
 
-            # Mark "improved" as sent and update the last alert level
+            # Update last alert info to track further improvements
             for chat_id in improved_recipients:
-                set_telegram_all_clear_sent(station_id, chat_id, timestamp)
-                # Update last alert level so we can track further improvements
-                set_telegram_last_alert_info(station_id, chat_id, timestamp, overall_level)
+                # Only set all_clear if we reached GOOD (true "all clear")
+                # For intermediate improvements (VERY_LOW→LOW, LOW→MODERATE),
+                # don't set the flag so we can notify on further improvements
+                if overall_level == "GOOD":
+                    set_telegram_all_clear_sent(station_id, chat_id, timestamp)
+                # Update the LEVEL to track further improvements, but keep the
+                # ORIGINAL timestamp so the cooldown timer isn't reset.
+                # This prevents repeating alerts after improvement notifications.
+                original_time, _ = get_telegram_last_alert_info(station_id, chat_id)
+                if original_time:
+                    set_telegram_last_alert_info(station_id, chat_id, original_time, overall_level)
+                else:
+                    set_telegram_last_alert_info(station_id, chat_id, timestamp, overall_level)
 
             alerts_sent.append({
                 "station": reading["station"].get("nameEn", reading["station"]["name"]),
