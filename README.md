@@ -1,183 +1,133 @@
 # Israel Air Quality Alert Bot
 
-Multi-platform bot (WhatsApp + Telegram) that sends air quality alerts to subscribers based on their preferences.
+A Telegram bot that sends real-time air quality alerts based on data from Israeli monitoring stations.
 
 ## Features
 
-- **Multi-platform**: WhatsApp (via Twilio) and Telegram support
-- **Real-time data**: Fetches from Israel Ministry of Environmental Protection API
-- **Customizable alerts**: Region/city selection, alert thresholds, time windows
-- **Hebrew interface**: Full Hebrew conversational flow
-- **Pollutant monitoring**: PM2.5, PM10, O3, NO2, Benzene
-- **Anti-spam**: 2-hour cooldown between alerts for same station
+- Real-time alerts when air quality deteriorates
+- Covers 230+ monitoring stations across Israel
+- Tracks AQI (Air Quality Index) and Benzene levels
+- Customizable alert sensitivity and quiet hours
+- "All clear" notifications when air quality improves
+- Hebrew interface
+
+## Data Source
+
+Air quality data is fetched from the **Israeli Ministry of Environmental Protection** API:
+- Endpoint: `https://air-api.sviva.gov.il/v1/envista/stations`
+- Updates every 10 minutes from monitoring stations
+- Pollutants tracked: PM2.5, PM10, O3, NO2, SO2, CO, NOX, Benzene
+
+## How It Works
+
+### Israeli AQI Scale
+
+The bot uses the official Israeli AQI formula where **100 = best air quality** and values decrease (even going negative) as air quality worsens:
+
+| AQI Range | Quality | Alert Level |
+|-----------|---------|-------------|
+| > 50 | Good | GOOD |
+| 0 to 50 | Moderate | MODERATE |
+| -100 to 0 | Unhealthy for sensitive groups | LOW |
+| < -100 | Unhealthy | VERY_LOW |
+
+### Benzene Monitoring
+
+Benzene is a known carcinogen with no safe threshold (WHO). The bot alerts at these levels:
+
+| Benzene (ppb) | Level |
+|---------------|-------|
+| < 1.0 | No alert |
+| 1.0 - 1.55 | Elevated |
+| 1.55 - 2.10 | High |
+| 2.10 - 2.64 | Very High |
+| > 2.64 | Dangerous |
 
 ## Architecture
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────┐
-│  Twilio         │────▶│  webhook         │────▶│  Redis      │
-│  (WhatsApp)     │◀────│  (DO Function)   │◀────│  (Valkey)   │
-└─────────────────┘     └──────────────────┘     └─────────────┘
-                                                        │
-┌─────────────────┐     ┌──────────────────┐           │
-│  Telegram       │────▶│  telegram-webhook│───────────┤
-│  Bot API        │◀────│  (DO Function)   │           │
-└─────────────────┘     └──────────────────┘           │
-                                                        │
-┌─────────────────┐     ┌──────────────────┐           │
-│  Air Quality    │────▶│  check-alerts    │───────────┘
-│  API            │     │  (DO Function)   │
-└─────────────────┘     │  [Every 10 min]  │
+│  Cron Trigger   │────>│  check-alerts    │────>│  Telegram   │
+│  (every 30 min) │     │  function        │     │  Bot API    │
+└─────────────────┘     └────────┬─────────┘     └─────────────┘
+                                 │
+                                 v
+                        ┌──────────────────┐
+                        │  Redis/Valkey    │
+                        │  (user prefs)    │
                         └──────────────────┘
+                                 ^
+                                 │
+┌─────────────────┐     ┌────────┴─────────┐
+│  Telegram User  │────>│ telegram-webhook │
+│  Commands       │     │  function        │
+└─────────────────┘     └──────────────────┘
 ```
 
-## Files
+## Deployment
 
-| File | Purpose |
-|------|---------|
-| `packages/airquality/webhook/` | WhatsApp webhook - handles Twilio messages |
-| `packages/airquality/telegram-webhook/` | Telegram webhook - handles Telegram messages |
-| `packages/airquality/check-alerts/` | Alert checker - fetches air quality, sends alerts |
-| `project.yml` | DigitalOcean Functions deployment config |
-| `.env.example` | Environment variables template |
+Deployed on DigitalOcean Functions.
 
-## Pollutants Monitored
+### Prerequisites
 
-| Pollutant | Unit | Good | Moderate | Unhealthy |
-|-----------|------|------|----------|-----------|
-| PM2.5 | µg/m³ | ≤12 | 12-35 | >35 |
-| PM10 | µg/m³ | ≤50 | 50-100 | >100 |
-| O3 | ppb | ≤60 | 60-80 | >80 |
-| NO2 | ppb | ≤53 | 53-100 | >100 |
-| **Benzene** | µg/m³ | ≤1 | 1-5 | >5 (EU limit) |
+- DigitalOcean account with Functions enabled
+- Telegram Bot Token (from @BotFather)
+- Redis/Valkey database for user storage
 
-## Alert Levels
+### Environment Variables
 
-| Level | Hebrew | AQI Threshold | Description |
-|-------|--------|---------------|-------------|
-| GOOD | טוב | < 51 | Alert when drops from good (most sensitive) |
-| MODERATE | בינוני | < 0 | Alert when drops from moderate (recommended) |
-| LOW | לא בריא | < -200 | Alert only when unhealthy |
-| VERY_LOW | מסוכן | < -400 | Alert only in dangerous conditions |
+Set these in DigitalOcean Functions settings:
 
-## Environment Variables
+| Variable | Description |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
+| `REDIS_URL` | Redis connection URL |
+| `TZ` | Timezone (default: `Asia/Jerusalem`) |
+| `LANGUAGE` | Interface language (default: `he`) |
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `TWILIO_ACCOUNT_SID` | For WhatsApp | Twilio account SID |
-| `TWILIO_AUTH_TOKEN` | For WhatsApp | Twilio auth token |
-| `TELEGRAM_BOT_TOKEN` | For Telegram | Telegram bot token from @BotFather |
-| `REDIS_URL` | Yes | Redis/Valkey connection URL |
-| `LANGUAGE` | No | Default: `he` |
-
-## Quick Start
-
-### 1. Clone and Configure
+### Deploy
 
 ```bash
-git clone https://github.com/amimimor/air-quality-bot.git
-cd air-quality-bot/packages/airquality/alert
+# Install doctl and connect to serverless
+doctl serverless install
+doctl serverless connect
 
-# Copy and edit environment variables
-cp .env.example .env
-# Edit .env with your credentials
-```
-
-### 2. Deploy to DigitalOcean Functions
-
-```bash
-source .env
-export TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TELEGRAM_BOT_TOKEN REDIS_URL
+# Deploy
 doctl serverless deploy .
 ```
 
-### 3. Configure Telegram Bot
+### Set Telegram Webhook
 
 ```bash
-# Get webhook URL
-WEBHOOK_URL=$(doctl sls fn get airquality/telegram-webhook --url)
+# Get your function URL
+doctl sls fn get airquality/telegram-webhook --url
 
-# Register with Telegram
-curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook?url=$WEBHOOK_URL"
+# Set webhook (replace URL)
+curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=<FUNCTION_URL>"
 ```
 
-### 4. Configure WhatsApp (Twilio)
+## Bot Commands
 
-1. Get webhook URL: `doctl sls fn get airquality/webhook --url`
-2. In Twilio Console → Messaging → WhatsApp Sandbox
-3. Set "When a message comes in" to your webhook URL
-
-## Telegram Commands
-
-| Command | Action |
-|---------|--------|
-| `/start` | Start registration or show status |
+| Command | Description |
+|---------|-------------|
+| `/start` | Start registration |
 | `/status` | View current settings |
-| `/change` | Change all settings |
-| `/regions` | Change monitored regions/cities |
-| `/level` | Change alert threshold |
-| `/hours` | Change alert hours |
+| `/level` | Change alert sensitivity |
+| `/hours` | Set quiet hours |
+| `/now` | Get current air quality |
+| `/thresholds` | View alert thresholds |
 | `/stop` | Unsubscribe |
-| `/help` | Show help |
 
-## WhatsApp Commands (Hebrew)
+## Configuration
 
-| Command | Action |
-|---------|--------|
-| `אזורים` | Change monitored regions |
-| `רמה` | Change alert threshold |
-| `שעות` | Change alert hours |
-| `סטטוס` | View current settings |
-| `עצור` | Unsubscribe |
-| `עזרה` | Show help |
+Alert thresholds and AQI breakpoints are defined in `packages/airquality/check-alerts/aqi_config.yaml`.
 
-## Time Windows
+## Testing
 
-| Window | Hebrew | Hours |
-|--------|--------|-------|
-| morning | בוקר | 06:00-12:00 |
-| afternoon | צהריים | 12:00-18:00 |
-| evening | ערב | 18:00-22:00 |
-| night | לילה | 22:00-06:00 |
-
-## Redis Data Structure
-
+```bash
+cd packages/airquality/check-alerts
+python -m pytest test_aqi.py -v
 ```
-# WhatsApp users (hash)
-users: {
-  "+972501234567": {"phone": "...", "regions": [...], "level": "MODERATE", "hours": [...]}
-}
-
-# WhatsApp region index (sets)
-region:tel_aviv: ["+972501234567", ...]
-station:339: ["+972501234567", ...]
-
-# Telegram users (individual keys)
-telegram:user:{chat_id}: {"chat_id": "...", "regions": [...], "stations": [...], "level": "...", "hours": [...]}
-telegram:users: {chat_id1, chat_id2, ...}
-
-# Anti-spam tracking
-last_alert:{phone}: {station_id: timestamp}
-telegram:last_alert:{chat_id}: {station_id: timestamp}
-```
-
-## Branches
-
-| Branch | Description |
-|--------|-------------|
-| `main` | Full version with WhatsApp + Telegram + Benzene |
-| `whatsapp` | WhatsApp-only version |
-| `telegram-bot` | Development branch for Telegram features |
-
-## Cost Comparison
-
-| Users | WhatsApp (Twilio) | Telegram | Savings |
-|------:|------------------:|---------:|--------:|
-| 100 | ~$65/mo | ~$15/mo | 77% |
-| 1,000 | ~$520/mo | ~$20/mo | 96% |
-| 10,000 | ~$5,000/mo | ~$50/mo | 99% |
-
-*Telegram is free for messaging. Costs are for infrastructure (Redis + Functions) only.*
 
 ## License
 
