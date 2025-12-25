@@ -33,10 +33,10 @@ redis_client = redis.from_url(
 ) if REDIS_URL else None
 
 # ============================================================================
-# Readings Cache (3 minute TTL)
+# Readings Cache (10 minute TTL - matches check-alerts cron)
 # ============================================================================
 
-READINGS_CACHE_TTL = 180  # 3 minutes
+READINGS_CACHE_TTL = 600  # 10 minutes - aligned with check-alerts
 
 
 def get_cached_reading(station_id: int) -> Optional[dict]:
@@ -77,8 +77,8 @@ def get_api_token() -> Optional[str]:
                 _api_token_cache["token"] = match.group(1)
                 _api_token_cache["expires"] = time.time() + 3600
                 return _api_token_cache["token"]
-    except:
-        pass
+    except Exception as e:
+        print(f"Error fetching API token: {e}")
     return _api_token_cache.get("token")
 
 
@@ -149,8 +149,8 @@ def get_stations_by_region() -> dict:
             _stations_cache["stations"] = all_stations
             _stations_cache["by_region"] = by_region
             _stations_cache["expires"] = time.time() + 3600
-    except:
-        pass
+    except Exception as e:
+        print(f"Error fetching stations: {e}")
 
     return _stations_cache.get("by_region", {})
 
@@ -963,6 +963,7 @@ def get_current_readings(user: dict) -> str:
             lines.append("")
 
         except Exception as e:
+            print(f"Error fetching station {station_id}: {e}")
             continue
 
     if len(lines) <= 2:
