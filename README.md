@@ -129,6 +129,25 @@ cd packages/airquality/check-alerts
 python -m pytest test_aqi.py -v
 ```
 
+Tests run automatically on GitHub Actions for all pushes and PRs to main.
+
+## Publishing
+
+Use the publish script for safe deployments:
+
+```bash
+./scripts/publish.sh
+```
+
+This script:
+1. Runs tests locally
+2. Creates a release branch and PR
+3. Waits for GitHub Actions tests to pass
+4. Merges the PR
+5. Deploys to DigitalOcean Functions
+
+Requirements: `gh` (GitHub CLI) and `doctl` (DigitalOcean CLI) must be installed and authenticated.
+
 ## License
 
 MIT
