@@ -48,7 +48,7 @@ Benzene is a known carcinogen with no safe threshold (WHO). The bot alerts at th
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────┐
 │  Cron Trigger   │────>│  check-alerts    │────>│  Telegram   │
-│  (every 30 min) │     │  function        │     │  Bot API    │
+│  (every 10 min) │     │  function        │     │  Bot API    │
 └─────────────────┘     └────────┬─────────┘     └─────────────┘
                                  │
                                  v
