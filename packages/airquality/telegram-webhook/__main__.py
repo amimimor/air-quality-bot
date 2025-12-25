@@ -33,6 +33,29 @@ redis_client = redis.from_url(
 ) if REDIS_URL else None
 
 # ============================================================================
+# Readings Cache (3 minute TTL)
+# ============================================================================
+
+READINGS_CACHE_TTL = 180  # 3 minutes
+
+
+def get_cached_reading(station_id: int) -> Optional[dict]:
+    """Get cached reading for a station."""
+    if not redis_client:
+        return None
+    data = redis_client.get(f"reading:{station_id}")
+    if data:
+        return json.loads(data)
+    return None
+
+
+def set_cached_reading(station_id: int, reading: dict):
+    """Cache a station reading."""
+    if redis_client:
+        redis_client.setex(f"reading:{station_id}", READINGS_CACHE_TTL, json.dumps(reading))
+
+
+# ============================================================================
 # API Token Management
 # ============================================================================
 
@@ -239,12 +262,35 @@ HOURS_MESSAGE = """🕐 *שלב 3: שעות התראה*
 COMMANDS_TEXT = """📌 *פקודות:*
 • /now - מצב איכות האוויר כרגע
 • /status - הצגת ההגדרות
+• /thresholds - סף התראה לפי מזהם
 • /change - שינוי כל ההגדרות
 • /regions - שינוי אזורים/ערים
 • /level - שינוי סף התראה
 • /hours - שינוי שעות
 • /stop - הפסקת התראות
 • /help - עזרה"""
+
+THRESHOLDS_MESSAGE = """📊 <b>מדדי התראה</b>
+
+<b>🌬️ מדד AQI (ישראלי)</b>
+<code>100 = מצוין, 0 = גרוע</code>
+• טוב: &gt;50
+• בינוני: 0-50
+• לא בריא: 0 עד -100
+• מסוכן: &lt;-100
+
+<b>⚗️ בנזן (ppb)</b>
+<code>אין סף בטוח - מסרטן</code>
+• מוגבר: ≥0.3 (~1 µg/m³)
+• גבוה: ≥1.2 (תקן ישראלי)
+• גבוה מאוד: ≥1.6 (גבול EU)
+• מסוכן: ≥2.5
+
+<b>⚠️ המלצות לפי רמה</b>
+• מוגבר → הגבילו פעילות בחוץ
+• גבוה+ → הישארו בפנים
+
+🔗 https://air.sviva.gov.il"""
 
 COMPLETE_MESSAGE = f"""✅ *ההרשמה הושלמה!*
 
@@ -430,6 +476,47 @@ def get_user_status(user: dict) -> str:
     level = get_level_name(user.get("level", "MODERATE"))
     hours = get_hours_names(user.get("hours", ["morning", "afternoon", "evening", "night"]))
     return f"{location}\n🎚️ סף התראה: {level}\n🕐 שעות: {hours}"
+
+
+def get_user_status_html(user: dict) -> str:
+    """Get styled HTML status for user."""
+    # Location
+    stations = user.get("stations", [])
+    regions = user.get("regions", [])
+    if stations:
+        location = get_station_names(stations)
+        location_line = f"📍 <b>תחנות:</b> <code>{location}</code>"
+    elif regions:
+        location = get_region_names(regions)
+        location_line = f"🗺️ <b>אזורים:</b> <code>{location}</code>"
+    else:
+        location_line = "🗺️ <b>אזורים:</b> <i>לא הוגדרו</i>"
+
+    # Level with color indicator
+    level_id = user.get("level", "MODERATE")
+    level_name = get_level_name(level_id)
+    level_emoji = {"GOOD": "🟢", "MODERATE": "🟡", "LOW": "🟠", "VERY_LOW": "🔴"}.get(level_id, "⚪")
+
+    # Hours
+    hours = get_hours_names(user.get("hours", ["morning", "afternoon", "evening", "night"]))
+
+    # Active status
+    active = user.get("active", False)
+    status_line = "🟢 <b>פעיל</b>" if active else "⏸ <b>מושהה</b>"
+
+    return f"""📊 <b>הגדרות ההתראות שלך</b>
+
+{location_line}
+
+🎚️ <b>סף התראה:</b> {level_emoji} {level_name}
+
+🕐 <b>שעות:</b> <code>{hours}</code>
+
+{status_line}
+
+━━━━━━━━━━━━━━━
+<i>שנה הגדרות:</i> /change
+<i>מדדי התראה:</i> /thresholds"""
 
 
 def build_cities_message(region_code: str) -> str:
@@ -780,34 +867,49 @@ def get_current_readings(user: dict) -> str:
 
     for station_id in station_ids[:5]:  # Limit to 5 stations
         try:
-            response = httpx.get(
-                f"{AIR_API_URL}/stations/{station_id}/data/latest",
-                headers={"Authorization": f"ApiToken {api_token}"},
-                timeout=10.0,
-            )
-            if response.status_code != 200:
-                continue
+            # Check cache first
+            cached = get_cached_reading(station_id)
+            if cached:
+                pollutants = cached.get("pollutants", {})
+                pollutant_meta = cached.get("pollutant_meta", {})
+                aqi = cached.get("aqi", 50)
+            else:
+                # Fetch from API
+                response = httpx.get(
+                    f"{AIR_API_URL}/stations/{station_id}/data/latest",
+                    headers={"Authorization": f"ApiToken {api_token}"},
+                    timeout=10.0,
+                )
+                if response.status_code != 200:
+                    continue
 
-            data = response.json().get("data", [])
-            if not data:
-                continue
+                data = response.json().get("data", [])
+                if not data:
+                    continue
 
-            channels = data[0].get("channels", [])
-            pollutants = {}
-            pollutant_meta = {}
-            for c in channels:
-                if c.get("valid"):
-                    name = c["name"].upper()
-                    pollutants[name] = c["value"]
-                    pollutant_meta[name] = {
-                        "alias": c.get("alias", c["name"]),
-                        "units": c.get("units", ""),
-                    }
+                channels = data[0].get("channels", [])
+                pollutants = {}
+                pollutant_meta = {}
+                for c in channels:
+                    if c.get("valid"):
+                        name = c["name"].upper()
+                        pollutants[name] = c["value"]
+                        pollutant_meta[name] = {
+                            "alias": c.get("alias", c["name"]),
+                            "units": c.get("units", ""),
+                        }
 
-            if not pollutants:
-                continue
+                if not pollutants:
+                    continue
 
-            aqi = calculate_aqi(pollutants)
+                aqi = calculate_aqi(pollutants)
+
+                # Cache the reading
+                set_cached_reading(station_id, {
+                    "pollutants": pollutants,
+                    "pollutant_meta": pollutant_meta,
+                    "aqi": aqi,
+                })
             level_name, emoji = get_aqi_level(aqi)
 
             # Get station name with city
@@ -889,6 +991,9 @@ def handle_command(chat_id: str, command: str) -> str:
 
     elif command == "/status":
         if user:
+            # Test HTML styling for specific user
+            if chat_id == "7984476273":
+                return ("HTML", get_user_status_html(user))
             status = get_user_status(user)
             active_status = "✅ פעיל" if user.get("active") else "⏹️ מושהה"
             return f"📊 *הסטטוס שלך:*\n\n{status}\n\nסטטוס: {active_status}"
@@ -916,6 +1021,9 @@ def handle_command(chat_id: str, command: str) -> str:
 
     elif command == "/help":
         return HELP_MESSAGE
+
+    elif command == "/thresholds":
+        return ("HTML", THRESHOLDS_MESSAGE)
 
     elif command == "/now":
         if not user:
@@ -967,8 +1075,11 @@ def main(args: dict) -> dict:
         # Process message
         response = handle_message(chat_id, text)
 
-        # Send response
-        send_message(chat_id, response)
+        # Send response (handle HTML tuple format)
+        if isinstance(response, tuple) and response[0] == "HTML":
+            send_message(chat_id, response[1], parse_mode="HTML")
+        else:
+            send_message(chat_id, response)
 
         return {"statusCode": 200, "body": "OK"}
 

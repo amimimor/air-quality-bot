@@ -56,6 +56,31 @@ def get_redis():
     return redis.from_url(REDIS_URL, decode_responses=True)
 
 
+# ============================================================================
+# Readings Cache (3 minute TTL)
+# ============================================================================
+
+READINGS_CACHE_TTL = 180  # 3 minutes
+
+
+def get_cached_reading(station_id: int) -> Optional[dict]:
+    """Get cached reading for a station."""
+    r = get_redis()
+    if not r:
+        return None
+    data = r.get(f"reading:{station_id}")
+    if data:
+        return json.loads(data)
+    return None
+
+
+def set_cached_reading(station_id: int, reading: dict):
+    """Cache a station reading."""
+    r = get_redis()
+    if r:
+        r.setex(f"reading:{station_id}", READINGS_CACHE_TTL, json.dumps(reading))
+
+
 def get_subscribers_for_region(region: str) -> list[str]:
     """Get all phone numbers subscribed to a region."""
     r = get_redis()
@@ -481,13 +506,28 @@ def calculate_aqi(pollutants: dict) -> int:
     return int(round(aqi))
 
 
-def fetch_readings(stations: list[dict]) -> list[dict]:
-    """Fetch real air quality readings from air.sviva.gov.il API."""
+def fetch_readings(stations: list[dict], use_cache: bool = True) -> list[dict]:
+    """Fetch air quality readings from API with optional Redis caching.
+
+    Args:
+        stations: List of station dicts with 'id' key
+        use_cache: If True, check Redis cache first (3 min TTL)
+    """
     readings = []
     api_token = get_api_token()
 
     for station in stations:
         station_id = station["id"]
+
+        # Check cache first
+        if use_cache:
+            cached = get_cached_reading(station_id)
+            if cached:
+                # Restore station dict (not cached)
+                cached["station"] = station
+                readings.append(cached)
+                continue
+
         try:
             response = httpx.get(
                 f"{AIR_API_URL}/stations/{station_id}/data/latest",
@@ -520,7 +560,7 @@ def fetch_readings(stations: list[dict]) -> list[dict]:
                 aqi = calculate_aqi(pollutants)
 
                 benzene_ppb = pollutants.get("BENZENE", 0)
-                readings.append({
+                reading = {
                     "station": station,
                     "aqi": aqi,
                     "level": get_alert_level(aqi),
@@ -535,7 +575,12 @@ def fetch_readings(stations: list[dict]) -> list[dict]:
                     "benzene_ppb": benzene_ppb,
                     "benzene_level": get_benzene_level(benzene_ppb) if benzene_ppb else None,
                     "timestamp": timestamp,
-                })
+                }
+                readings.append(reading)
+
+                # Cache the reading (without station dict to save space)
+                cache_data = {k: v for k, v in reading.items() if k != "station"}
+                set_cached_reading(station_id, cache_data)
             else:
                 print(f"Station {station_id} returned {response.status_code}")
 

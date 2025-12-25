@@ -4,7 +4,9 @@ Unit tests for AQI calculation functions.
 Run with: python -m pytest test_aqi.py -v
 """
 import pytest
+import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 import sys
 import importlib.util
 
@@ -22,6 +24,9 @@ calculate_aqi = check_alerts.calculate_aqi
 get_alert_level = check_alerts.get_alert_level
 get_benzene_level = check_alerts.get_benzene_level
 should_alert = check_alerts.should_alert
+get_cached_reading = check_alerts.get_cached_reading
+set_cached_reading = check_alerts.set_cached_reading
+READINGS_CACHE_TTL = check_alerts.READINGS_CACHE_TTL
 BREAKPOINTS = check_alerts.BREAKPOINTS
 ALERT_LEVELS = check_alerts.ALERT_LEVELS
 BENZENE_THRESHOLDS = check_alerts.BENZENE_THRESHOLDS
@@ -231,6 +236,129 @@ class TestConfigLoaded:
                 next_low = ranges[i + 1][0]
                 assert current_high == next_low, \
                     f"{pollutant}: gap between {current_high} and {next_low}"
+
+
+class TestReadingsCache:
+    """Tests for Redis readings cache functions."""
+
+    @pytest.fixture
+    def mock_redis(self):
+        """Create a mock Redis client."""
+        mock = MagicMock()
+        return mock
+
+    @pytest.fixture
+    def sample_reading(self):
+        """Sample reading data for tests."""
+        return {
+            "aqi": 75,
+            "level": "GOOD",
+            "pollutants": {"PM2.5": 15.0, "PM10": 30.0},
+            "pollutant_meta": {
+                "PM2.5": {"alias": "PM2.5", "units": "µg/m³"},
+                "PM10": {"alias": "PM10", "units": "µg/m³"},
+            },
+            "pm25": 15.0,
+            "pm10": 30.0,
+            "o3": 0,
+            "no2": 0,
+            "so2": 0,
+            "co": 0,
+            "benzene_ppb": 0,
+            "benzene_level": None,
+            "timestamp": "2025-12-25T10:00:00+02:00",
+        }
+
+    def test_cache_ttl_is_3_minutes(self):
+        """Cache TTL should be 180 seconds (3 minutes)."""
+        assert READINGS_CACHE_TTL == 180
+
+    def test_get_cached_reading_hit(self, mock_redis, sample_reading):
+        """get_cached_reading should return parsed JSON when cache hit."""
+        station_id = 123
+        mock_redis.get.return_value = json.dumps(sample_reading)
+
+        with patch.object(check_alerts, 'get_redis', return_value=mock_redis):
+            result = get_cached_reading(station_id)
+
+        mock_redis.get.assert_called_once_with(f"reading:{station_id}")
+        assert result == sample_reading
+        assert result["aqi"] == 75
+        assert result["pollutants"]["PM2.5"] == 15.0
+
+    def test_get_cached_reading_miss(self, mock_redis):
+        """get_cached_reading should return None when cache miss."""
+        station_id = 456
+        mock_redis.get.return_value = None
+
+        with patch.object(check_alerts, 'get_redis', return_value=mock_redis):
+            result = get_cached_reading(station_id)
+
+        mock_redis.get.assert_called_once_with(f"reading:{station_id}")
+        assert result is None
+
+    def test_get_cached_reading_no_redis(self):
+        """get_cached_reading should return None when Redis unavailable."""
+        with patch.object(check_alerts, 'get_redis', return_value=None):
+            result = get_cached_reading(123)
+
+        assert result is None
+
+    def test_set_cached_reading(self, mock_redis, sample_reading):
+        """set_cached_reading should store JSON with correct TTL."""
+        station_id = 789
+
+        with patch.object(check_alerts, 'get_redis', return_value=mock_redis):
+            set_cached_reading(station_id, sample_reading)
+
+        mock_redis.setex.assert_called_once_with(
+            f"reading:{station_id}",
+            READINGS_CACHE_TTL,
+            json.dumps(sample_reading)
+        )
+
+    def test_set_cached_reading_no_redis(self):
+        """set_cached_reading should gracefully handle missing Redis."""
+        with patch.object(check_alerts, 'get_redis', return_value=None):
+            # Should not raise an exception
+            set_cached_reading(123, {"aqi": 50})
+
+    def test_cache_round_trip(self, mock_redis, sample_reading):
+        """Data should survive a cache round-trip (set then get)."""
+        station_id = 999
+        stored_data = {}
+
+        def mock_setex(key, ttl, value):
+            stored_data[key] = value
+
+        def mock_get(key):
+            return stored_data.get(key)
+
+        mock_redis.setex.side_effect = mock_setex
+        mock_redis.get.side_effect = mock_get
+
+        with patch.object(check_alerts, 'get_redis', return_value=mock_redis):
+            # Set the cache
+            set_cached_reading(station_id, sample_reading)
+
+            # Get from cache
+            result = get_cached_reading(station_id)
+
+        assert result == sample_reading
+
+    def test_cache_key_format(self, mock_redis):
+        """Cache key should follow 'reading:{station_id}' format."""
+        mock_redis.get.return_value = None  # Return None for cache miss
+
+        with patch.object(check_alerts, 'get_redis', return_value=mock_redis):
+            get_cached_reading(42)
+            set_cached_reading(42, {"aqi": 50})
+
+        # Verify key format in both operations
+        mock_redis.get.assert_called_with("reading:42")
+        mock_redis.setex.assert_called_once()
+        call_args = mock_redis.setex.call_args[0]
+        assert call_args[0] == "reading:42"
 
 
 if __name__ == "__main__":
