@@ -8,11 +8,35 @@ Configure WATCH_REGIONS or WATCH_STATIONS to only get alerts for your area.
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, List
 from zoneinfo import ZoneInfo
 
 import httpx
 import redis
+import yaml
+
+
+# ============================================================================
+# Configuration Loading
+# ============================================================================
+
+def load_aqi_config() -> dict:
+    """Load AQI configuration from YAML file."""
+    config_path = Path(__file__).parent / "aqi_config.yaml"
+    if config_path.exists():
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+    # Fallback to defaults if config file missing
+    return {
+        "alert_levels": {"GOOD": 51, "MODERATE": 0, "LOW": -100, "VERY_LOW": -200},
+        "benzene_thresholds": {"GOOD": 0.3, "MODERATE": 1.2, "LOW": 1.6, "VERY_LOW": 2.5},
+        "breakpoints": {}
+    }
+
+
+# Load config at module level
+_AQI_CONFIG = load_aqi_config()
 
 # Israel timezone
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
@@ -331,23 +355,17 @@ def get_watched_stations() -> list[dict]:
 
 # Israeli AQI thresholds (100=best, negative=worst)
 # Alert when AQI drops BELOW these values
-ALERT_LEVELS = {
-    "GOOD": 51,       # Alert when <= 50 (very sensitive - any degradation)
-    "MODERATE": 0,    # Alert when < 0 (moderate - unhealthy for sensitive)
-    "LOW": -100,      # Alert when < -100 (low sensitivity - unhealthy)
-    "VERY_LOW": -200, # Alert when < -200 (only hazardous)
-}
+# Loaded from aqi_config.yaml
+ALERT_LEVELS = _AQI_CONFIG.get("alert_levels", {
+    "GOOD": 51, "MODERATE": 0, "LOW": -100, "VERY_LOW": -200
+})
 
 # Benzene thresholds in ppb (API returns ppb)
-# Conversion: 1 ppb Benzene ≈ 3.19 µg/m³
-# EU annual limit: 5 µg/m³ ≈ 1.6 ppb
 # WHO: No safe threshold - benzene is a known carcinogen
-BENZENE_THRESHOLDS = {
-    "GOOD": 0.3,      # Detectable elevation (~1 µg/m³)
-    "MODERATE": 1.2,  # Israeli standard (~3.8 µg/m³)
-    "LOW": 1.6,       # EU annual limit (~5 µg/m³)
-    "VERY_LOW": 2.5,  # Above EU limit (~8 µg/m³)
-}
+# Loaded from aqi_config.yaml
+BENZENE_THRESHOLDS = _AQI_CONFIG.get("benzene_thresholds", {
+    "GOOD": 1.0, "MODERATE": 1.55, "LOW": 2.10, "VERY_LOW": 2.64
+})
 
 
 # ============================================================================
@@ -421,26 +439,31 @@ def calculate_sub_index(value: float, breakpoints: list) -> float:
     return breakpoints[-1][3]
 
 
+# Default breakpoints (fallback if config not loaded)
+_DEFAULT_BREAKPOINTS = {
+    "PM2.5": [[0, 18.5, 0, 49], [18.5, 37.5, 50, 100], [37.5, 84.5, 101, 200], [84.5, 130.5, 201, 300], [130.5, 165.5, 301, 400], [165.5, 200, 401, 500]],
+    "PM10": [[0, 65, 0, 49], [65, 130, 50, 100], [130, 216, 101, 200], [216, 301, 201, 300], [301, 356, 301, 400], [356, 430, 401, 500]],
+    "O3": [[0, 35, 0, 49], [35, 71, 50, 100], [71, 98, 101, 200], [98, 118, 201, 300], [118, 156, 301, 400], [156, 188, 401, 500]],
+    "NO2": [[0, 53, 0, 49], [53, 106, 50, 100], [106, 161, 101, 200], [161, 214, 201, 300], [214, 261, 301, 400], [261, 316, 401, 500]],
+    "SO2": [[0, 67, 0, 49], [67, 134, 50, 100], [134, 164, 101, 200], [164, 192, 201, 300], [192, 254, 301, 400], [254, 303, 401, 500]],
+    "CO": [[0, 26, 0, 49], [26, 52, 50, 100], [52, 79, 101, 200], [79, 105, 201, 300], [105, 131, 301, 400], [131, 156, 401, 500]],
+    "NOX": [[0, 250, 0, 49], [250, 500, 50, 100], [500, 751, 101, 200], [751, 1001, 201, 300], [1001, 1201, 301, 400], [1201, 1400, 401, 500]],
+}
+
+# Load breakpoints from config (converted from lists to tuples for calculate_sub_index)
+BREAKPOINTS = {}
+for pollutant, ranges in _AQI_CONFIG.get("breakpoints", _DEFAULT_BREAKPOINTS).items():
+    BREAKPOINTS[pollutant.upper()] = [tuple(r) for r in ranges]
+
+
 def calculate_aqi(pollutants: dict) -> int:
     """
     Calculate Air Quality Index using official Israeli formula.
     Israeli AQI: 100 = best, 0 = worst (inverted scale)
     Formula: AQI = 100 - max(sub_indices)
 
-    Breakpoints from Israeli Ministry of Environmental Protection.
+    Breakpoints loaded from aqi_config.yaml
     """
-    # Israeli breakpoints: (conc_low, conc_high, idx_low, idx_high)
-    # NOTE: Ranges made continuous to avoid gaps (e.g., 37.2 falling between 37 and 37.5)
-    BREAKPOINTS = {
-        "PM2.5": [(0, 18.5, 0, 49), (18.5, 37.5, 50, 100), (37.5, 84.5, 101, 200), (84.5, 130.5, 201, 300), (130.5, 165.5, 301, 400), (165.5, 200, 401, 500)],
-        "PM10": [(0, 65, 0, 49), (65, 130, 50, 100), (130, 216, 101, 200), (216, 301, 201, 300), (301, 356, 301, 400), (356, 430, 401, 500)],
-        "O3": [(0, 35, 0, 49), (35, 71, 50, 100), (71, 98, 101, 200), (98, 118, 201, 300), (118, 156, 301, 400), (156, 188, 401, 500)],
-        "NO2": [(0, 53, 0, 49), (53, 106, 50, 100), (106, 161, 101, 200), (161, 214, 201, 300), (214, 261, 301, 400), (261, 316, 401, 500)],
-        "SO2": [(0, 67, 0, 49), (67, 134, 50, 100), (134, 164, 101, 200), (164, 192, 201, 300), (192, 254, 301, 400), (254, 303, 401, 500)],
-        "CO": [(0, 26, 0, 49), (26, 52, 50, 100), (52, 79, 101, 200), (79, 105, 201, 300), (105, 131, 301, 400), (131, 156, 401, 500)],
-        "NOX": [(0, 250, 0, 49), (250, 500, 50, 100), (500, 751, 101, 200), (751, 1001, 201, 300), (1001, 1201, 301, 400), (1201, 1400, 401, 500)],
-    }
-
     sub_indices = []
 
     for pollutant, breakpoints in BREAKPOINTS.items():
