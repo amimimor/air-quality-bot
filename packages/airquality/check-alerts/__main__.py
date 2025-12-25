@@ -1254,60 +1254,6 @@ def should_send_telegram_alert(station_id: int, chat_id: str, current_overall_le
         return True
 
 
-# Benzene-specific anti-spam (separate from AQI alerts)
-def get_telegram_last_benzene_alert(station_id: int, chat_id: str) -> tuple:
-    """Get the last benzene alert info for this station/user. Returns (timestamp, level)."""
-    r = get_redis()
-    if not r:
-        return None, None
-    data = r.hget(f"telegram:last_benzene:{chat_id}", str(station_id))
-    if not data:
-        return None, None
-    # Format: "timestamp|level" e.g., "2025-12-17T20:30:00+02:00|VERY_LOW"
-    if "|" in data:
-        parts = data.split("|")
-        return parts[0], parts[1] if len(parts) > 1 else None
-    return data, None  # Old format without level
-
-
-def set_telegram_last_benzene_alert(station_id: int, chat_id: str, timestamp: str, level: str):
-    """Record when we sent a benzene alert for this station to this Telegram user."""
-    r = get_redis()
-    if r:
-        # Store both timestamp and level
-        r.hset(f"telegram:last_benzene:{chat_id}", str(station_id), f"{timestamp}|{level}")
-        r.expire(f"telegram:last_benzene:{chat_id}", 86400)
-
-
-def should_send_benzene_alert(station_id: int, chat_id: str, current_level: str) -> bool:
-    """
-    Check if we should send a benzene alert.
-    - Always send if no previous alert
-    - Send if 2 hours have passed (cooldown expired)
-    - Send if level got WORSE (even within cooldown)
-    """
-    last_time, last_level = get_telegram_last_benzene_alert(station_id, chat_id)
-    if not last_time:
-        return True
-
-    # Level severity: higher = worse
-    level_severity = {"GOOD": 1, "MODERATE": 2, "LOW": 3, "VERY_LOW": 4}
-    current_severity = level_severity.get(current_level, 0)
-    last_severity = level_severity.get(last_level, 0)
-
-    # Alert if level got worse
-    if current_severity > last_severity:
-        return True
-
-    # Otherwise, check 2-hour cooldown
-    try:
-        last_ts = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
-        hours_since = (datetime.now(ISRAEL_TZ) - last_ts).total_seconds() / 3600
-        return hours_since >= 2
-    except:
-        return True
-
-
 # ============================================================================
 # Twilio WhatsApp
 # ============================================================================
