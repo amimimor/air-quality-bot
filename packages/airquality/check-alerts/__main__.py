@@ -60,7 +60,7 @@ def get_redis():
 # Readings Cache (3 minute TTL)
 # ============================================================================
 
-READINGS_CACHE_TTL = 180  # 3 minutes
+READINGS_CACHE_TTL = 600  # 10 minutes (matches cron interval)
 
 
 def get_cached_reading(station_id: int) -> Optional[dict]:
@@ -506,89 +506,177 @@ def calculate_aqi(pollutants: dict) -> int:
     return int(round(aqi))
 
 
+def _fetch_single_station(station: dict, api_token: str) -> Optional[dict]:
+    """Fetch a single station's reading. Used by concurrent fetcher."""
+    station_id = station["id"]
+    try:
+        response = httpx.get(
+            f"{AIR_API_URL}/stations/{station_id}/data/latest",
+            headers={"Authorization": f"ApiToken {api_token}"},
+            timeout=10.0,
+        )
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        data_list = data.get("data", [])
+        if not data_list:
+            return None
+
+        channels = data_list[0].get("channels", [])
+        timestamp = data_list[0].get("datetime", datetime.now(ISRAEL_TZ).isoformat())
+
+        # Collect all pollutants with their metadata
+        pollutants = {}
+        pollutant_meta = {}
+        for channel in channels:
+            name = channel.get("name", "")
+            value = channel.get("value")
+            if value is not None and channel.get("valid", False):
+                pollutants[name.upper()] = float(value)
+                pollutant_meta[name.upper()] = {
+                    "alias": channel.get("alias", name),
+                    "units": channel.get("units", ""),
+                }
+
+        if not pollutants:
+            return None
+
+        aqi = calculate_aqi(pollutants)
+        benzene_ppb = pollutants.get("BENZENE", 0)
+
+        reading = {
+            "station": station,
+            "aqi": aqi,
+            "level": get_alert_level(aqi),
+            "pollutants": pollutants,
+            "pollutant_meta": pollutant_meta,
+            "pm25": pollutants.get("PM2.5", 0),
+            "pm10": pollutants.get("PM10", 0),
+            "o3": pollutants.get("O3", 0),
+            "no2": pollutants.get("NO2", 0),
+            "so2": pollutants.get("SO2", 0),
+            "co": pollutants.get("CO", 0),
+            "benzene_ppb": benzene_ppb,
+            "benzene_level": get_benzene_level(benzene_ppb) if benzene_ppb else None,
+            "timestamp": timestamp,
+        }
+
+        # Cache the reading
+        cache_data = {k: v for k, v in reading.items() if k != "station"}
+        set_cached_reading(station_id, cache_data)
+
+        return reading
+
+    except Exception as e:
+        return None
+
+
 def fetch_readings(stations: list[dict], use_cache: bool = True) -> list[dict]:
     """Fetch air quality readings from API with optional Redis caching.
+
+    Uses concurrent requests for uncached stations (20 parallel workers).
 
     Args:
         stations: List of station dicts with 'id' key
         use_cache: If True, check Redis cache first (3 min TTL)
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     readings = []
+    stations_to_fetch = []
     api_token = get_api_token()
 
+    # Check cache first for all stations
     for station in stations:
         station_id = station["id"]
-
-        # Check cache first
         if use_cache:
             cached = get_cached_reading(station_id)
             if cached:
-                # Restore station dict (not cached)
                 cached["station"] = station
                 readings.append(cached)
                 continue
+        stations_to_fetch.append(station)
 
-        try:
-            response = httpx.get(
-                f"{AIR_API_URL}/stations/{station_id}/data/latest",
-                headers={"Authorization": f"ApiToken {api_token}"},
-                timeout=10.0,
-            )
+    # Fetch uncached stations concurrently with shared client
+    if stations_to_fetch:
+        with httpx.Client(timeout=10.0) as client:
+            def fetch_with_client(station):
+                return _fetch_single_station_with_client(station, api_token, client)
 
-            if response.status_code == 200:
-                data = response.json()
-                data_list = data.get("data", [])
-                if not data_list:
-                    continue
-
-                channels = data_list[0].get("channels", [])
-                timestamp = data_list[0].get("datetime", datetime.now(ISRAEL_TZ).isoformat())
-
-                # Collect all pollutants with their metadata
-                pollutants = {}
-                pollutant_meta = {}  # Store alias and units
-                for channel in channels:
-                    name = channel.get("name", "")
-                    value = channel.get("value")
-                    if value is not None and channel.get("valid", False):
-                        pollutants[name.upper()] = float(value)
-                        pollutant_meta[name.upper()] = {
-                            "alias": channel.get("alias", name),
-                            "units": channel.get("units", ""),
-                        }
-
-                aqi = calculate_aqi(pollutants)
-
-                benzene_ppb = pollutants.get("BENZENE", 0)
-                reading = {
-                    "station": station,
-                    "aqi": aqi,
-                    "level": get_alert_level(aqi),
-                    "pollutants": pollutants,
-                    "pollutant_meta": pollutant_meta,
-                    "pm25": pollutants.get("PM2.5", 0),
-                    "pm10": pollutants.get("PM10", 0),
-                    "o3": pollutants.get("O3", 0),
-                    "no2": pollutants.get("NO2", 0),
-                    "so2": pollutants.get("SO2", 0),
-                    "co": pollutants.get("CO", 0),
-                    "benzene_ppb": benzene_ppb,
-                    "benzene_level": get_benzene_level(benzene_ppb) if benzene_ppb else None,
-                    "timestamp": timestamp,
-                }
-                readings.append(reading)
-
-                # Cache the reading (without station dict to save space)
-                cache_data = {k: v for k, v in reading.items() if k != "station"}
-                set_cached_reading(station_id, cache_data)
-            else:
-                print(f"Station {station_id} returned {response.status_code}")
-
-        except Exception as e:
-            print(f"Error fetching station {station_id}: {e}")
-            continue
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                futures = {executor.submit(fetch_with_client, s): s for s in stations_to_fetch}
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        readings.append(result)
 
     return readings
+
+
+def _fetch_single_station_with_client(station: dict, api_token: str, client: httpx.Client) -> Optional[dict]:
+    """Fetch a single station using shared client."""
+    station_id = station["id"]
+    try:
+        response = client.get(
+            f"{AIR_API_URL}/stations/{station_id}/data/latest",
+            headers={"Authorization": f"ApiToken {api_token}"},
+        )
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        data_list = data.get("data", [])
+        if not data_list:
+            return None
+
+        channels = data_list[0].get("channels", [])
+        timestamp = data_list[0].get("datetime", datetime.now(ISRAEL_TZ).isoformat())
+
+        pollutants = {}
+        pollutant_meta = {}
+        for channel in channels:
+            name = channel.get("name", "")
+            value = channel.get("value")
+            if value is not None and channel.get("valid", False):
+                pollutants[name.upper()] = float(value)
+                pollutant_meta[name.upper()] = {
+                    "alias": channel.get("alias", name),
+                    "units": channel.get("units", ""),
+                }
+
+        if not pollutants:
+            return None
+
+        aqi = calculate_aqi(pollutants)
+        benzene_ppb = pollutants.get("BENZENE", 0)
+
+        reading = {
+            "station": station,
+            "aqi": aqi,
+            "level": get_alert_level(aqi),
+            "pollutants": pollutants,
+            "pollutant_meta": pollutant_meta,
+            "pm25": pollutants.get("PM2.5", 0),
+            "pm10": pollutants.get("PM10", 0),
+            "o3": pollutants.get("O3", 0),
+            "no2": pollutants.get("NO2", 0),
+            "so2": pollutants.get("SO2", 0),
+            "co": pollutants.get("CO", 0),
+            "benzene_ppb": benzene_ppb,
+            "benzene_level": get_benzene_level(benzene_ppb) if benzene_ppb else None,
+            "timestamp": timestamp,
+        }
+
+        cache_data = {k: v for k, v in reading.items() if k != "station"}
+        set_cached_reading(station_id, cache_data)
+
+        return reading
+
+    except Exception:
+        return None
 
 
 def get_last_alert_time(station_id: int, phone: str) -> Optional[str]:
@@ -989,35 +1077,51 @@ def get_telegram_subscribers_by_station(station_id: int) -> list[dict]:
     return subscribers
 
 
-def get_all_telegram_regions() -> list[str]:
-    """Get all regions that have Telegram subscribers."""
+def get_all_telegram_users_cached() -> list[dict]:
+    """Get all Telegram users with pipelining for efficiency."""
     r = get_redis()
     if not r:
         return []
 
-    regions = set()
-    chat_ids = r.smembers("telegram:users")
+    chat_ids = list(r.smembers("telegram:users"))
+    if not chat_ids:
+        return []
+
+    # Use pipeline to fetch all users in one round trip
+    pipe = r.pipeline()
     for chat_id in chat_ids:
-        user = get_telegram_user(chat_id)
-        if user and user.get("active"):
-            for region in user.get("regions", []):
-                regions.add(region)
+        pipe.get(f"telegram:user:{chat_id}")
+    results = pipe.execute()
+
+    users = []
+    for data in results:
+        if data:
+            try:
+                user = json.loads(data)
+                if user.get("active"):
+                    users.append(user)
+            except:
+                pass
+    return users
+
+
+def get_all_telegram_regions() -> list[str]:
+    """Get all regions that have Telegram subscribers."""
+    users = get_all_telegram_users_cached()
+    regions = set()
+    for user in users:
+        for region in user.get("regions", []):
+            regions.add(region)
     return list(regions)
 
 
 def get_all_telegram_stations() -> list[int]:
     """Get all station IDs that have Telegram subscribers."""
-    r = get_redis()
-    if not r:
-        return []
-
+    users = get_all_telegram_users_cached()
     stations = set()
-    chat_ids = r.smembers("telegram:users")
-    for chat_id in chat_ids:
-        user = get_telegram_user(chat_id)
-        if user and user.get("active"):
-            for station_id in user.get("stations", []):
-                stations.add(station_id)
+    for user in users:
+        for station_id in user.get("stations", []):
+            stations.add(station_id)
     return list(stations)
 
 
@@ -1280,21 +1384,28 @@ def main(args: dict) -> dict:
     # Fetch all stations from API (cached)
     all_stations = get_all_stations()
 
-    # Get stations to check: regions with subscribers + specific stations with subscribers
+    # Build stations to check - prioritize directly subscribed stations
+    # For region subscribers, use a smaller sample to avoid timeout
     stations_to_check = []
     seen_station_ids = set()
 
-    # Add stations from active regions (both WhatsApp and Telegram)
+    # First: Add specific stations that users directly subscribed to (high priority)
     for s in all_stations:
-        if s["region"] in all_active_regions:
+        if s["id"] in all_active_station_ids:
             stations_to_check.append(s)
             seen_station_ids.add(s["id"])
 
-    # Add specific stations that have subscribers (if not already included)
+    # Second: Add LIMITED stations from active regions (for region subscribers)
+    # Max 3 stations per region to avoid timeout
+    MAX_STATIONS_PER_REGION = 3
+    region_station_counts = {}
     for s in all_stations:
-        if s["id"] in all_active_station_ids and s["id"] not in seen_station_ids:
-            stations_to_check.append(s)
-            seen_station_ids.add(s["id"])
+        if s["region"] in all_active_regions and s["id"] not in seen_station_ids:
+            count = region_station_counts.get(s["region"], 0)
+            if count < MAX_STATIONS_PER_REGION:
+                stations_to_check.append(s)
+                seen_station_ids.add(s["id"])
+                region_station_counts[s["region"]] = count + 1
 
     # Fetch readings
     readings = fetch_readings(stations_to_check)
