@@ -1303,8 +1303,17 @@ def main(args: dict) -> dict:
     current_time_window = get_current_time_window()
 
     # Batch processing: split stations across multiple cron invocations
-    batch = int(args.get("batch", 0))
-    total_batches = int(args.get("total_batches", 1))
+    # Auto-detect batch from current minute if not provided (DO triggers don't pass body)
+    if "batch" in args and "total_batches" in args:
+        batch = int(args.get("batch", 0))
+        total_batches = int(args.get("total_batches", 1))
+    else:
+        # Determine batch from current minute:
+        # batch-0 runs at :00, :10, :20, :30, :40, :50 (minute % 10 == 0)
+        # batch-1 runs at :02, :12, :22, :32, :42, :52 (minute % 10 == 2)
+        current_minute = datetime.now(ISRAEL_TZ).minute % 10
+        total_batches = 2
+        batch = 0 if current_minute < 2 else 1
 
     # Get all WhatsApp subscribers from Redis (grouped by region AND station)
     subscribers_by_region = get_all_subscribers()
