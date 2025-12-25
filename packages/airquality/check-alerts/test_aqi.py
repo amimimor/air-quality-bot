@@ -269,9 +269,9 @@ class TestReadingsCache:
             "timestamp": "2025-12-25T10:00:00+02:00",
         }
 
-    def test_cache_ttl_is_3_minutes(self):
-        """Cache TTL should be 180 seconds (3 minutes)."""
-        assert READINGS_CACHE_TTL == 180
+    def test_cache_ttl_is_10_minutes(self):
+        """Cache TTL should be 600 seconds (10 minutes)."""
+        assert READINGS_CACHE_TTL == 600
 
     def test_get_cached_reading_hit(self, mock_redis, sample_reading):
         """get_cached_reading should return parsed JSON when cache hit."""
