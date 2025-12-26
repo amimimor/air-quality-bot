@@ -590,21 +590,28 @@ def fetch_readings(stations: list[dict], use_cache: bool = True) -> list[dict]:
     api_token = get_api_token()
 
     # Check cache first for all stations
+    cache_hits = 0
     for station in stations:
         station_id = station["id"]
         if use_cache:
             cached = get_cached_reading(station_id)
-            if cached:
+            if cached and "aqi" in cached:
                 # Ensure 'level' exists (old cache entries might be missing it)
-                if "level" not in cached and "aqi" in cached:
+                if "level" not in cached:
                     cached["level"] = get_alert_level(cached["aqi"])
                 cached["station"] = station
                 readings.append(cached)
+                cache_hits += 1
                 continue
         stations_to_fetch.append(station)
 
+    print(f"Cache: {cache_hits} hits, {len(stations_to_fetch)} to fetch")
+
     # Fetch uncached stations concurrently with shared client
     if stations_to_fetch:
+        print(f"API token: {api_token[:8]}...")
+        fetch_success = 0
+        fetch_fail = 0
         with httpx.Client(timeout=10.0) as client:
             def fetch_with_client(station):
                 return _fetch_single_station_with_client(station, api_token, client)
@@ -615,6 +622,10 @@ def fetch_readings(stations: list[dict], use_cache: bool = True) -> list[dict]:
                     result = future.result()
                     if result:
                         readings.append(result)
+                        fetch_success += 1
+                    else:
+                        fetch_fail += 1
+        print(f"Fetch: {fetch_success} success, {fetch_fail} fail")
 
     return readings
 
