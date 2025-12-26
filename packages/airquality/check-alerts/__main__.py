@@ -53,7 +53,7 @@ def get_redis():
     """Get Redis connection."""
     if not REDIS_URL:
         return None
-    return redis.from_url(REDIS_URL, decode_responses=True)
+    return redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs=None)
 
 
 # ============================================================================
@@ -595,6 +595,9 @@ def fetch_readings(stations: list[dict], use_cache: bool = True) -> list[dict]:
         if use_cache:
             cached = get_cached_reading(station_id)
             if cached:
+                # Ensure 'level' exists (old cache entries might be missing it)
+                if "level" not in cached and "aqi" in cached:
+                    cached["level"] = get_alert_level(cached["aqi"])
                 cached["station"] = station
                 readings.append(cached)
                 continue
@@ -1309,8 +1312,8 @@ def main(args: dict) -> dict:
         total_batches = int(args.get("total_batches", 1))
     else:
         # Determine batch from current minute:
-        # batch-0 runs at :00, :10, :20, :30, :40, :50 (minute % 10 == 0)
-        # batch-1 runs at :02, :12, :22, :32, :42, :52 (minute % 10 == 2)
+        # batch-0 runs at :00, :10, :20, :30, :40, :50 (minute % 10 < 2)
+        # batch-1 runs at :02, :12, :22, :32, :42, :52 (minute % 10 >= 2)
         current_minute = datetime.now(ISRAEL_TZ).minute % 10
         total_batches = 2
         batch = 0 if current_minute < 2 else 1
