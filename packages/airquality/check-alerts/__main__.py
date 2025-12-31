@@ -1141,6 +1141,19 @@ def get_all_telegram_stations() -> list[int]:
     return list(stations)
 
 
+def deactivate_telegram_user(chat_id: str):
+    """Deactivate a Telegram user (e.g., when they block the bot)."""
+    r = get_redis()
+    if not r:
+        return
+    data = r.get(f"telegram:user:{chat_id}")
+    if data:
+        user = json.loads(data)
+        user["active"] = False
+        r.set(f"telegram:user:{chat_id}", json.dumps(user))
+        print(f"Deactivated user {chat_id} (blocked bot)")
+
+
 def send_telegram_message(chat_id: str, message: str) -> dict:
     """Send a message via Telegram Bot API."""
     if not TELEGRAM_BOT_TOKEN:
@@ -1155,6 +1168,10 @@ def send_telegram_message(chat_id: str, message: str) -> dict:
             },
             timeout=10.0,
         )
+        # Handle blocked users (403 Forbidden)
+        if response.status_code == 403:
+            deactivate_telegram_user(chat_id)
+            return {"status": "blocked", "code": 403}
         return {
             "status": "sent" if response.status_code == 200 else "failed",
             "code": response.status_code,
