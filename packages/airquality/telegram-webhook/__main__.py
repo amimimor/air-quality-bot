@@ -73,10 +73,11 @@ def get_api_token() -> Optional[str]:
         response = httpx.get(AIR_WEB_URL, timeout=10.0)
         if response.status_code == 200:
             import re
-            match = re.search(r'ApiToken\s+([a-f0-9-]+)', response.text)
+            # Look for the Authorization header token (the one that works for data endpoints)
+            match = re.search(r'"Authorization":\s*[\'"]ApiToken ([a-f0-9-]+)[\'"]', response.text)
             if match:
                 _api_token_cache["token"] = match.group(1)
-                _api_token_cache["expires"] = time.time() + 3600
+                _api_token_cache["expires"] = time.time() + 300  # 5 min cache (tokens rotate)
                 return _api_token_cache["token"]
     except Exception as e:
         print(f"Error fetching API token: {e}")
