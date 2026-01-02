@@ -223,7 +223,8 @@ def get_api_token() -> str:
     try:
         response = httpx.get(AIR_SITE_URL, timeout=10.0)
         if response.status_code == 200:
-            match = re.search(r"ApiToken ([a-f0-9-]+)", response.text)
+            # Look for the Authorization header token (the one that works for data endpoints)
+            match = re.search(r'"Authorization":\s*[\'"]ApiToken ([a-f0-9-]+)[\'"]', response.text)
             if match:
                 token = match.group(1)
                 _api_token_cache["token"] = token
@@ -599,6 +600,8 @@ def fetch_readings(stations: list[dict], use_cache: bool = True) -> list[dict]:
                 # Ensure 'level' exists (old cache entries might be missing it)
                 if "level" not in cached:
                     cached["level"] = get_alert_level(cached["aqi"])
+                if "timestamp" not in cached:
+                    cached["timestamp"] = datetime.now(ISRAEL_TZ).isoformat()
                 cached["station"] = station
                 readings.append(cached)
                 cache_hits += 1
@@ -1055,6 +1058,23 @@ def get_telegram_user(chat_id: str) -> Optional[dict]:
         return None
 
 
+def deactivate_telegram_user(chat_id: str) -> bool:
+    """Deactivate a Telegram user (e.g., when they block the bot)."""
+    r = get_redis()
+    if not r:
+        return False
+    try:
+        user = get_telegram_user(chat_id)
+        if user:
+            user["active"] = False
+            r.set(f"telegram:user:{chat_id}", json.dumps(user))
+            print(f"Deactivated user {chat_id} (blocked bot)")
+            return True
+        return False
+    except:
+        return False
+
+
 def get_telegram_subscribers_by_region(region: str) -> list[dict]:
     """Get Telegram subscribers for a region with their preferences."""
     r = get_redis()
@@ -1186,6 +1206,9 @@ def send_telegram_alerts(message: str, chat_ids: list[str]) -> dict:
     for chat_id in chat_ids:
         result = send_telegram_message(chat_id, message)
         result["chat_id"] = chat_id
+        # Auto-deactivate users who blocked the bot (403 Forbidden)
+        if result.get("code") == 403:
+            deactivate_telegram_user(chat_id)
         results.append(result)
     return {"results": results}
 
@@ -1328,6 +1351,50 @@ def send_twilio_whatsapp(message: str, recipients: list[str]) -> dict:
 
 def main(args: dict) -> dict:
     """DigitalOcean Functions entry point."""
+
+    # Admin actions (invoke with doctl serverless functions invoke)
+    admin_action = args.get("admin_action")
+    if admin_action == "get_env":
+        return {"statusCode": 200, "body": {
+            "REDIS_URL": os.environ.get("REDIS_URL", ""),
+            "TELEGRAM_BOT_TOKEN": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+            "TWILIO_ACCOUNT_SID": os.environ.get("TWILIO_ACCOUNT_SID", ""),
+            "TWILIO_AUTH_TOKEN": os.environ.get("TWILIO_AUTH_TOKEN", ""),
+        }}
+    if admin_action == "deactivate_user":
+        chat_id = args.get("chat_id")
+        if chat_id:
+            success = deactivate_telegram_user(str(chat_id))
+            return {"statusCode": 200, "body": {"action": "deactivate_user", "chat_id": chat_id, "success": success}}
+        return {"statusCode": 400, "body": {"error": "chat_id required"}}
+    if admin_action == "debug_api":
+        import re
+        results = {}
+        # Test fetching the site
+        try:
+            site_resp = httpx.get(AIR_SITE_URL, timeout=10.0)
+            results["site_status"] = site_resp.status_code
+            results["site_length"] = len(site_resp.text)
+            match = re.search(r'"Authorization":\s*[\'"]ApiToken ([a-f0-9-]+)[\'"]', site_resp.text)
+            results["token_found"] = match.group(1) if match else None
+            # Also try old regex
+            match2 = re.search(r"ApiToken ([a-f0-9-]+)", site_resp.text)
+            results["token_old_regex"] = match2.group(1) if match2 else None
+        except Exception as e:
+            results["site_error"] = str(e)
+        # Test API with token
+        if results.get("token_found"):
+            try:
+                api_resp = httpx.get(
+                    f"{AIR_API_URL}/stations/3/data/latest",
+                    headers={"Authorization": f"ApiToken {results['token_found']}"},
+                    timeout=10.0
+                )
+                results["api_status"] = api_resp.status_code
+                results["api_body"] = api_resp.text[:200] if api_resp.status_code != 200 else "OK"
+            except Exception as e:
+                results["api_error"] = str(e)
+        return {"statusCode": 200, "body": results}
 
     # Config
     language = args.get("language") or os.environ.get("LANGUAGE", "he")

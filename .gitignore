@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Claude Code context
+CLAUDE.md
+
 # Virtual environments
 .venv/
 virtualenv/
