@@ -36,9 +36,9 @@ packages:
             sourceDetails:
               cron: "0,10,20,30,40,50 * * * *"
               body: '{"batch": 0, "total_batches": 2}'
-          # Batch 1: runs at :02, :12, :22, :32, :42, :52
+          # Batch 1: runs at :05, :15, :25, :35, :45, :55 (5 min after batch-0)
           - name: batch-1
             sourceType: scheduler
             sourceDetails:
-              cron: "2,12,22,32,42,52 * * * *"
+              cron: "5,15,25,35,45,55 * * * *"
               body: '{"batch": 1, "total_batches": 2}'

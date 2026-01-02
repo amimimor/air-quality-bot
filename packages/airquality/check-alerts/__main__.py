@@ -610,8 +610,10 @@ def fetch_readings(stations: list[dict], use_cache: bool = True) -> list[dict]:
 
     print(f"Cache: {cache_hits} hits, {len(stations_to_fetch)} to fetch")
 
-    # Fetch uncached stations concurrently with shared client
+    # Fetch uncached stations with rate limiting to avoid API throttling
     if stations_to_fetch:
+        import random
+        import time
         print(f"API token: {api_token[:8]}...")
         fetch_success = 0
         fetch_fail = 0
@@ -619,7 +621,8 @@ def fetch_readings(stations: list[dict], use_cache: bool = True) -> list[dict]:
             def fetch_with_client(station):
                 return _fetch_single_station_with_client(station, api_token, client)
 
-            with ThreadPoolExecutor(max_workers=20) as executor:
+            # Use fewer workers and add random delays to be gentler on the API
+            with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = {executor.submit(fetch_with_client, s): s for s in stations_to_fetch}
                 for future in as_completed(futures):
                     result = future.result()
@@ -628,6 +631,8 @@ def fetch_readings(stations: list[dict], use_cache: bool = True) -> list[dict]:
                         fetch_success += 1
                     else:
                         fetch_fail += 1
+                    # Small random delay between processing results (0.1-0.5s)
+                    time.sleep(random.uniform(0.1, 0.5))
         print(f"Fetch: {fetch_success} success, {fetch_fail} fail")
 
     return readings
@@ -1407,11 +1412,11 @@ def main(args: dict) -> dict:
         total_batches = int(args.get("total_batches", 1))
     else:
         # Determine batch from current minute:
-        # batch-0 runs at :00, :10, :20, :30, :40, :50 (minute % 10 < 2)
-        # batch-1 runs at :02, :12, :22, :32, :42, :52 (minute % 10 >= 2)
+        # batch-0 runs at :00, :10, :20, :30, :40, :50 (minute % 10 < 5)
+        # batch-1 runs at :05, :15, :25, :35, :45, :55 (minute % 10 >= 5)
         current_minute = datetime.now(ISRAEL_TZ).minute % 10
         total_batches = 2
-        batch = 0 if current_minute < 2 else 1
+        batch = 0 if current_minute < 5 else 1
 
     # Get all WhatsApp subscribers from Redis (grouped by region AND station)
     subscribers_by_region = get_all_subscribers()
