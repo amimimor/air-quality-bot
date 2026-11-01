@@ -17,9 +17,22 @@ from urllib.parse import parse_qs
 
 REDIS_URL = os.environ.get("REDIS_URL")
 
+_redis_client = None
+
+
 def get_redis():
-    """Get Redis connection."""
-    return redis.from_url(REDIS_URL, decode_responses=True)
+    """Get Redis connection (shared pooled client, reused across calls)."""
+    global _redis_client
+    if not REDIS_URL:
+        return None
+    if _redis_client is None:
+        _redis_client = redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=30,
+        )
+    return _redis_client
 
 
 # ============================================================================

@@ -49,11 +49,23 @@ ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 REDIS_URL = os.environ.get("REDIS_URL")
 
 
+_redis_client = None
+
+
 def get_redis():
-    """Get Redis connection."""
+    """Get Redis connection (shared pooled client, reused across calls)."""
+    global _redis_client
     if not REDIS_URL:
         return None
-    return redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs=None)
+    if _redis_client is None:
+        _redis_client = redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            ssl_cert_reqs=None,
+            socket_connect_timeout=5,
+            socket_timeout=30,
+        )
+    return _redis_client
 
 
 # ============================================================================
@@ -1086,10 +1098,23 @@ def get_telegram_subscribers_by_region(region: str) -> list[dict]:
     if not r:
         return []
 
-    subscribers = []
-    chat_ids = r.smembers("telegram:users")
+    chat_ids = list(r.smembers("telegram:users"))
+    if not chat_ids:
+        return []
+
+    # Fetch all users in one pipelined round trip (avoids per-user round trips)
+    pipe = r.pipeline()
     for chat_id in chat_ids:
-        user = get_telegram_user(chat_id)
+        pipe.get(f"telegram:user:{chat_id}")
+
+    subscribers = []
+    for chat_id, data in zip(chat_ids, pipe.execute()):
+        if not data:
+            continue
+        try:
+            user = json.loads(data)
+        except Exception:
+            continue
         if user and user.get("active") and region in user.get("regions", []):
             subscribers.append({
                 "chat_id": chat_id,
@@ -1105,10 +1130,23 @@ def get_telegram_subscribers_by_station(station_id: int) -> list[dict]:
     if not r:
         return []
 
-    subscribers = []
-    chat_ids = r.smembers("telegram:users")
+    chat_ids = list(r.smembers("telegram:users"))
+    if not chat_ids:
+        return []
+
+    # Fetch all users in one pipelined round trip (avoids per-user round trips)
+    pipe = r.pipeline()
     for chat_id in chat_ids:
-        user = get_telegram_user(chat_id)
+        pipe.get(f"telegram:user:{chat_id}")
+
+    subscribers = []
+    for chat_id, data in zip(chat_ids, pipe.execute()):
+        if not data:
+            continue
+        try:
+            user = json.loads(data)
+        except Exception:
+            continue
         if user and user.get("active") and station_id in user.get("stations", []):
             subscribers.append({
                 "chat_id": chat_id,
